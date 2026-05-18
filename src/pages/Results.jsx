@@ -13,11 +13,16 @@ const BLOCK_DEFS = [
   { key: 'afternoon', label: '오후', timeStart: '12:00', timeEnd: '18:00' },
   { key: 'evening',   label: '저녁', timeStart: '18:00', timeEnd: '22:00' },
 ]
-const BLOCK_LABELS = { morning: '오전', afternoon: '오후', evening: '저녁' }
+const BLOCK_LABELS = { morning: '오전', afternoon: '오후', evening: '저녁', allday: '하루 가능' }
 const DOW_KR = ['일', '월', '화', '수', '목', '금', '토']
 
 /* ── Display helpers ─────────────────────────────────────── */
-function getAreaDisplay(r) {
+function getHubDisplay(r) {
+  if (r.startingHub) {
+    if (r.startingHub === '직접 입력') return r.startingAreaDetail?.trim() || null
+    return r.startingHub
+  }
+  // legacy: old responses used startingAreaCategory / area
   if (r.startingAreaCategory) {
     const detail = r.startingAreaDetail?.trim()
     return detail ? `${r.startingAreaCategory} / ${detail}` : r.startingAreaCategory
@@ -36,8 +41,9 @@ function formatTime(timeStr) {
 
 /* ── Data computation ────────────────────────────────────── */
 function computeAll(responses, meeting) {
-  const total    = responses.length
-  const allDates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
+  const total        = responses.length
+  const scheduleMode = meeting.scheduleMode || 'flexible'
+  const allDates     = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
 
   // Per-date: how many participants can make it
   const dateCounts = {}
@@ -47,81 +53,134 @@ function computeAll(responses, meeting) {
   }
   const possibleDatesCount = Object.keys(dateCounts).length
 
-  // Per-block slots across all dates
-  const blockSlots = []
-  if (total > 0) {
+  let blockSlots = [], bestSlots = [], recs = []
+
+  if (scheduleMode === 'exact') {
+    // Exact mode: find per-date time-range intersections
+    const exactSlots = []
     for (const d of allDates) {
-      const anyHere = responses.some(r => r.dates.some(x => x.date === d))
-      if (!anyHere) continue
-      for (const bd of BLOCK_DEFS) {
-        let count = 0
-        for (const r of responses) {
-          const rd = r.dates.find(x => x.date === d)
-          if (!rd) continue
-          if (rd.mode === 'anytime') { count++; continue }
-          if (rd.mode === 'time') {
-            if (rd.blocks?.includes(bd.key)) { count++; continue }
+      const dateResps = responses.filter(r => r.dates.some(x => x.date === d))
+      if (dateResps.length === 0) continue
+      const count = dateResps.length
+
+      let maxStart = '00:00', minEnd = '23:30', hasNonAnytime = false
+      for (const r of dateResps) {
+        const rd = r.dates.find(x => x.date === d)
+        if (!rd || rd.mode === 'anytime') continue
+        if (rd.timeStart && rd.timeEnd) {
+          hasNonAnytime = true
+          if (rd.timeStart > maxStart) maxStart = rd.timeStart
+          if (rd.timeEnd   < minEnd)   minEnd   = rd.timeEnd
+        }
+      }
+      const validRange = hasNonAnytime && maxStart < minEnd
+
+      exactSlots.push({
+        date: d, count, total,
+        timeStart: validRange ? maxStart : null,
+        timeEnd:   validRange ? minEnd   : null,
+      })
+    }
+    exactSlots.sort((a, b) => b.count - a.count || a.date.localeCompare(b.date))
+
+    bestSlots  = exactSlots.filter(s => s.count === total)
+    recs       = exactSlots.slice(0, 3).map(s => ({
+      date: s.date, count: s.count, total: s.total,
+      timeStart: s.timeStart, timeEnd: s.timeEnd, bestBlock: null,
+    }))
+    blockSlots = exactSlots
+  } else {
+    // Flexible mode: block-based computation
+    if (total > 0) {
+      for (const d of allDates) {
+        const anyHere = responses.some(r => r.dates.some(x => x.date === d))
+        if (!anyHere) continue
+        for (const bd of BLOCK_DEFS) {
+          let count = 0
+          for (const r of responses) {
+            const rd = r.dates.find(x => x.date === d)
+            if (!rd) continue
+            const blocks = rd.blocks || []
+            if (rd.mode === 'anytime' || blocks.includes('allday')) { count++; continue }
+            if (blocks.includes(bd.key)) { count++; continue }
             if (rd.timeStart && rd.timeEnd) {
               if (rd.timeStart < bd.timeEnd && rd.timeEnd > bd.timeStart) { count++; continue }
             }
           }
-        }
-        if (count > 0) {
-          blockSlots.push({ date: d, block: bd.key, blockLabel: bd.label, timeStart: bd.timeStart, timeEnd: bd.timeEnd, count, total })
+          if (count > 0) {
+            blockSlots.push({
+              date: d, block: bd.key, blockLabel: bd.label,
+              timeStart: bd.timeStart, timeEnd: bd.timeEnd, count, total,
+            })
+          }
         }
       }
+      blockSlots.sort((a, b) => b.count - a.count || a.date.localeCompare(b.date))
     }
-    blockSlots.sort((a, b) => b.count - a.count || a.date.localeCompare(b.date))
+
+    bestSlots = total > 0 ? blockSlots.filter(s => s.count === total) : []
+
+    recs = Object.entries(dateCounts)
+      .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([date, { count }]) => {
+        const blockCounts = {}
+        for (const r of responses) {
+          const rd = r.dates.find(x => x.date === date)
+          if (!rd) continue
+          const blocks = rd.blocks || []
+          const keys = rd.mode === 'anytime' || blocks.includes('allday')
+            ? ['morning', 'afternoon', 'evening']
+            : blocks
+          keys.forEach(k => { blockCounts[k] = (blockCounts[k] || 0) + 1 })
+        }
+        const best = Object.entries(blockCounts).sort((a, b) => b[1] - a[1])[0]
+        return { date, count, total, bestBlock: best?.[0] || null, timeStart: null, timeEnd: null }
+      })
   }
 
-  // Fully-available slots (count === total)
-  const bestSlots = total > 0 ? blockSlots.filter(s => s.count === total) : []
-
-  // Top 3 date-level recommendations
-  const recs = Object.entries(dateCounts)
-    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
-    .slice(0, 3)
-    .map(([date, { count }]) => {
-      const blockCounts = {}
-      for (const r of responses) {
-        const rd = r.dates.find(x => x.date === date)
-        if (!rd) continue
-        const keys = rd.mode === 'anytime' ? ['morning', 'afternoon', 'evening'] : (rd.blocks || [])
-        keys.forEach(k => { blockCounts[k] = (blockCounts[k] || 0) + 1 })
-      }
-      const best = Object.entries(blockCounts).sort((a, b) => b[1] - a[1])[0]
-      return { date, count, total, bestBlock: best?.[0] || null }
-    })
-
-  return { total, allDates, dateCounts, possibleDatesCount, blockSlots, bestSlots, recs }
+  return { total, allDates, dateCounts, possibleDatesCount, blockSlots, bestSlots, recs, scheduleMode }
 }
 
-/* ── Participant availability per cell ───────────────────── */
-function getParticipantCell(r, date) {
+/* ── Participant cell helpers ────────────────────────────── */
+function getParticipantCell(r, date, scheduleMode) {
   const rd = r.dates.find(x => x.date === date)
   if (!rd) return { type: 'none' }
-  if (rd.mode === 'anytime') return { type: 'anytime' }
+
+  if (scheduleMode === 'exact') {
+    if (rd.mode === 'anytime') return { type: 'anytime' }
+    if (rd.timeStart && rd.timeEnd) return { type: 'exact', timeStart: rd.timeStart, timeEnd: rd.timeEnd }
+    return { type: 'anytime' }
+  }
+
+  // flexible
   const blocks = rd.blocks || []
+  if (rd.mode === 'anytime') return { type: 'anytime' }
+  if (blocks.includes('allday')) return { type: 'allday' }
   if (blocks.length > 0) return { type: 'blocks', blocks }
   if (rd.timeStart && rd.timeEnd) return { type: 'timeRange', timeStart: rd.timeStart, timeEnd: rd.timeEnd }
-  return { type: 'time' }
+  return { type: 'anytime' }
 }
 
 function cellText(cell) {
   if (cell.type === 'none')      return '미입력'
   if (cell.type === 'anytime')   return '가능'
+  if (cell.type === 'allday')    return '하루 가능'
+  if (cell.type === 'exact')     return formatTime(cell.timeStart)
   if (cell.type === 'blocks') {
     if (cell.blocks.length === 1) return BLOCK_LABELS[cell.blocks[0]] || '가능'
-    return `${cell.blocks.length}개 구간`
+    return cell.blocks.map(b => BLOCK_LABELS[b]).filter(Boolean).join('·')
   }
-  if (cell.type === 'timeRange') return `${formatTime(cell.timeStart)}`
+  if (cell.type === 'timeRange') return formatTime(cell.timeStart)
   return '가능'
 }
 
 function cellStyle(cell) {
   const base = { fontSize: 10, fontWeight: 600, borderRadius: 5, padding: '3px 5px', whiteSpace: 'nowrap' }
-  if (cell.type === 'none')    return { ...base, background: 'var(--bg-muted2)', color: 'var(--text-muted)' }
-  if (cell.type === 'anytime') return { ...base, background: 'var(--success-bg)', color: 'var(--primary)' }
+  if (cell.type === 'none')
+    return { ...base, background: 'var(--bg-muted)', color: 'var(--text-muted)' }
+  if (cell.type === 'anytime' || cell.type === 'allday')
+    return { ...base, background: 'var(--success-bg)', color: 'var(--primary)' }
   return { ...base, background: 'var(--secondary-bg)', color: 'var(--secondary-text)', border: '1px solid var(--secondary-border)' }
 }
 
@@ -153,9 +212,9 @@ function ResultCalendar({ meeting, dateCounts, total }) {
     const info = dateCounts[dateStr]
     if (!info || total === 0) return { bg: null, fg: null }
     const ratio = info.count / info.total
-    if (ratio === 1)   return { bg: 'var(--primary)', fg: '#ffffff' }
-    if (ratio >= 0.5)  return { bg: '#bbf7d0',        fg: 'var(--primary)' }
-    return               { bg: '#ECFCCB',        fg: 'var(--secondary-text)' }
+    if (ratio === 1)  return { bg: 'var(--primary)',     fg: '#ffffff' }
+    if (ratio >= 0.5) return { bg: 'var(--success-bg)',  fg: 'var(--primary)' }
+    return                   { bg: 'var(--secondary-bg)', fg: 'var(--secondary-text)' }
   }
 
   const cells = []
@@ -164,7 +223,6 @@ function ResultCalendar({ meeting, dateCounts, total }) {
 
   return (
     <div className="calendar">
-      {/* Header */}
       <div className="calendar-header">
         <button className="calendar-nav" onClick={prevMonth} disabled={!canPrev}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 3.5L6 8l4 4.5"/></svg>
@@ -175,7 +233,6 @@ function ResultCalendar({ meeting, dateCounts, total }) {
         </button>
       </div>
 
-      {/* Day-of-week header */}
       <div className="calendar-grid">
         {DOW_KR.map(d => <div key={d} className="calendar-dow">{d}</div>)}
 
@@ -197,18 +254,13 @@ function ResultCalendar({ meeting, dateCounts, total }) {
             )
           }
 
-          // Day outside range but in month
           const sunStyle = col === 0 ? { color: '#ef4444' } : col === 6 ? { color: '#3b82f6' } : {}
 
           return (
             <div key={dateStr} className="cal-day-wrap">
               <div style={{
-                width: 36,
-                height: 50,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
+                width: 36, height: 50,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 borderRadius: 8,
                 background: bg || 'transparent',
                 color: bg ? fg : (sunStyle.color || 'var(--text-primary)'),
@@ -230,27 +282,13 @@ function ResultCalendar({ meeting, dateCounts, total }) {
 }
 
 /* ── Icons ───────────────────────────────────────────────── */
-function ShareIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
-}
-function PlusIcon() {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
-}
-function LinkIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-}
-function RefreshIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-}
-function TrashIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-}
-function InfoIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-}
-function ChevronDown() {
-  return <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4l4 4 4-4"/></svg>
-}
+function ShareIcon()   { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg> }
+function PlusIcon()    { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg> }
+function LinkIcon()    { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> }
+function RefreshIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> }
+function TrashIcon()   { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> }
+function InfoIcon()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg> }
+function ChevronDown() { return <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4l4 4 4-4"/></svg> }
 
 /* ── Main component ──────────────────────────────────────── */
 export default function Results() {
@@ -302,14 +340,12 @@ export default function Results() {
 
   return (
     <Layout title="결과 보기" rightSlot={rightSlot}>
-      {/* Tabs */}
       <div className="tabs">
         <button className={`tab${tab === 'summary' ? ' active' : ''}`} onClick={() => setTab('summary')}>요약 보기</button>
         <button className={`tab${tab === 'friend'  ? ' active' : ''}`} onClick={() => setTab('friend')}>친구별 보기</button>
       </div>
 
       <div className="page-content-flush">
-        {/* Meeting header */}
         <div style={{ padding: '20px 20px 0' }}>
           <h2 style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>{meeting.name}</h2>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
@@ -320,7 +356,6 @@ export default function Results() {
         {tab === 'summary' && <SummaryTab meeting={meeting} responses={responses} stats={stats} />}
         {tab === 'friend'  && <FriendTab  meeting={meeting} responses={responses} stats={stats} />}
 
-        {/* Owner menu */}
         {isOwner && (
           <div style={{ padding: '0 20px 24px' }}>
             <button
@@ -355,7 +390,9 @@ export default function Results() {
 
 /* ── Summary tab ─────────────────────────────────────────── */
 function SummaryTab({ meeting, responses, stats }) {
-  const { total, allDates, dateCounts, possibleDatesCount, bestSlots, recs } = stats
+  const { total, allDates, dateCounts, possibleDatesCount, bestSlots, recs, scheduleMode } = stats
+
+  const bestLabel = scheduleMode === 'exact' ? '모두 가능한 날짜' : '모두 가능한 시간'
 
   return (
     <div style={{ padding: '0 20px' }}>
@@ -363,18 +400,13 @@ function SummaryTab({ meeting, responses, stats }) {
       {/* ── Stat summary cards ── */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
         {[
-          { label: '참여자',       value: `${total}명` },
-          { label: '가능 날짜',    value: `${possibleDatesCount}/${allDates.length}일` },
-          { label: '모두 가능한 시간', value: `${bestSlots.length}개` },
+          { label: '참여자',    value: `${total}명` },
+          { label: '가능 날짜', value: `${possibleDatesCount}/${allDates.length}일` },
+          { label: bestLabel,   value: `${bestSlots.length}개` },
         ].map(({ label, value }) => (
           <div key={label} style={{
-            flex: 1,
-            background: 'var(--bg-muted)',
-            border: '1px solid var(--border)',
-            borderRadius: 10,
-            padding: '12px 10px',
-            textAlign: 'center',
-            minWidth: 0,
+            flex: 1, background: 'var(--bg-muted)', border: '1px solid var(--border)',
+            borderRadius: 10, padding: '12px 10px', textAlign: 'center', minWidth: 0,
           }}>
             <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 3 }}>{value}</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>{label}</div>
@@ -386,30 +418,33 @@ function SummaryTab({ meeting, responses, stats }) {
       {total > 0 && (
         bestSlots.length > 0 ? (
           <div style={{
-            background: 'var(--success-bg)',
-            border: '1px solid #bbf7d0',
-            borderRadius: 12,
-            padding: '16px',
-            marginBottom: 24,
+            background: 'var(--success-bg)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: '16px', marginBottom: 24,
           }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
               모두 가능한 최적 시간
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {bestSlots.slice(0, 3).map((s, i) => (
-                <div key={`${s.date}-${s.block}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  {i === 0 && (
-                    <div style={{ width: 20, height: 20, borderRadius: '50%', background: 'var(--primary)', color: 'white', fontSize: 11, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>1</div>
-                  )}
-                  {i > 0 && (
-                    <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#bbf7d0', color: 'var(--primary)', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{i + 1}</div>
-                  )}
+                <div key={`${s.date}-${s.block || 'exact'}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%',
+                    background: i === 0 ? 'var(--primary)' : 'var(--bg-muted2)',
+                    color: i === 0 ? 'white' : 'var(--primary)',
+                    fontSize: 11, fontWeight: 800,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  }}>{i + 1}</div>
                   <div style={{ flex: 1 }}>
                     <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
                       {formatDateShort(s.date)}
                     </span>
                     <span style={{ fontSize: 13, color: 'var(--primary)', marginLeft: 8 }}>
-                      {s.blockLabel} ({formatTime(s.timeStart)} – {formatTime(s.timeEnd)})
+                      {s.blockLabel
+                        ? `${s.blockLabel} (${formatTime(s.timeStart)} – ${formatTime(s.timeEnd)})`
+                        : s.timeStart
+                          ? `${formatTime(s.timeStart)} – ${formatTime(s.timeEnd)}`
+                          : '하루 가능'
+                      }
                     </span>
                   </div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', flexShrink: 0 }}>
@@ -424,14 +459,9 @@ function SummaryTab({ meeting, responses, stats }) {
           </div>
         ) : (
           <div style={{
-            background: 'var(--bg-muted)',
-            border: '1px solid var(--border)',
-            borderRadius: 12,
-            padding: '16px',
-            marginBottom: 24,
-            fontSize: 13,
-            color: 'var(--text-secondary)',
-            lineHeight: 1.6,
+            background: 'var(--bg-muted)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: '16px', marginBottom: 24,
+            fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6,
           }}>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>아직 모두 가능한 시간이 없어요.</div>
             가장 많이 겹치는 시간을 아래에서 확인해 주세요.
@@ -448,9 +478,9 @@ function SummaryTab({ meeting, responses, stats }) {
         {total > 0 && (
           <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
             {[
-              { bg: 'var(--primary)', fg: 'white',                  label: '모두 가능' },
-              { bg: '#bbf7d0',        fg: 'var(--primary)',          label: '절반 이상' },
-              { bg: '#ECFCCB',        fg: 'var(--secondary-text)',   label: '일부 가능' },
+              { bg: 'var(--primary)',      fg: 'white',                    label: '모두 가능' },
+              { bg: 'var(--success-bg)',   fg: 'var(--primary)',            label: '절반 이상' },
+              { bg: 'var(--secondary-bg)', fg: 'var(--secondary-text)',     label: '일부 가능' },
             ].map(({ bg, fg, label }) => (
               <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 14, height: 14, borderRadius: 4, background: bg, display: 'inline-block', flexShrink: 0 }} />
@@ -476,13 +506,17 @@ function SummaryTab({ meeting, responses, stats }) {
                   {i + 1}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
                     {formatDate(rec.date)}
-                    {rec.bestBlock && (
+                    {rec.timeStart && rec.timeEnd ? (
+                      <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 6 }}>
+                        {formatTime(rec.timeStart)} – {formatTime(rec.timeEnd)}
+                      </span>
+                    ) : rec.bestBlock ? (
                       <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 6 }}>
                         {BLOCK_LABELS[rec.bestBlock]} 추천
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="result-bar-wrap">
                     <div className="result-bar" style={{ width: `${(rec.count / rec.total) * 100}%` }} />
@@ -505,17 +539,20 @@ function SummaryTab({ meeting, responses, stats }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {responses.map(r => {
-              const area = getAreaDisplay(r)
+              const hub = getHubDisplay(r)
               return (
-                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <div key={r.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                  background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10,
+                }}>
                   {r.isHost && (
                     <span style={{ fontSize: 10, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '2px 6px', borderRadius: 6 }}>방장</span>
                   )}
                   <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{r.name}</span>
-                  {area ? (
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· {area}</span>
+                  {hub ? (
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· {hub}</span>
                   ) : (
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 출발 지역 미입력</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 출발 거점 미입력</span>
                   )}
                 </div>
               )
@@ -529,13 +566,12 @@ function SummaryTab({ meeting, responses, stats }) {
 
 /* ── Friend tab ──────────────────────────────────────────── */
 function FriendTab({ meeting, responses, stats }) {
-  const { total, dateCounts } = stats
+  const { total, dateCounts, scheduleMode } = stats
 
   if (!total) {
     return <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>아직 응답이 없어요.</div>
   }
 
-  // Only show dates that at least one person responded on (max 14)
   const candidateDates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
     .filter(d => dateCounts[d])
     .slice(0, 14)
@@ -554,7 +590,7 @@ function FriendTab({ meeting, responses, stats }) {
                   이름
                 </th>
                 {candidateDates.map(d => {
-                  const dt  = new Date(d + 'T00:00:00')
+                  const dt   = new Date(d + 'T00:00:00')
                   const info = dateCounts[d]
                   return (
                     <th key={d} style={{ padding: '6px 4px', textAlign: 'center', minWidth: 54, fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500 }}>
@@ -582,7 +618,7 @@ function FriendTab({ meeting, responses, stats }) {
                     {r.isHost && <span style={{ fontSize: 9, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '1px 4px', borderRadius: 4, marginLeft: 4 }}>방장</span>}
                   </td>
                   {candidateDates.map(d => {
-                    const cell = getParticipantCell(r, d)
+                    const cell = getParticipantCell(r, d, scheduleMode)
                     return (
                       <td key={d} style={{ textAlign: 'center', padding: '8px 4px' }}>
                         <span style={cellStyle(cell)}>{cellText(cell)}</span>
@@ -595,12 +631,11 @@ function FriendTab({ meeting, responses, stats }) {
           </table>
         </div>
 
-        {/* Legend */}
         <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
           {[
             { style: { background: 'var(--success-bg)', color: 'var(--primary)' }, label: '가능' },
             { style: { background: 'var(--secondary-bg)', color: 'var(--secondary-text)', border: '1px solid var(--secondary-border)' }, label: '시간대' },
-            { style: { background: 'var(--bg-muted2)', color: 'var(--text-muted)' }, label: '미입력' },
+            { style: { background: 'var(--bg-muted)', color: 'var(--text-muted)' }, label: '미입력' },
           ].map(({ style, label }) => (
             <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span style={{ ...style, fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>{label}</span>
@@ -614,10 +649,9 @@ function FriendTab({ meeting, responses, stats }) {
         <div className="section-title">친구별 상세 보기</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {responses.map(r => {
-            const area = getAreaDisplay(r)
+            const hub = getHubDisplay(r)
             return (
               <div key={r.id} className="card">
-                {/* Header */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                     {r.isHost && <span style={{ fontSize: 10, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '2px 6px', borderRadius: 6 }}>방장</span>}
@@ -626,30 +660,42 @@ function FriendTab({ meeting, responses, stats }) {
                       {r.dates.length}일 응답
                     </span>
                   </div>
-                  <div style={{ fontSize: 12, color: area ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
-                    {area ? `출발: ${area}` : '출발 지역 미입력'}
+                  <div style={{ fontSize: 12, color: hub ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                    {hub ? `출발: ${hub}` : '출발 거점 미입력'}
                   </div>
                 </div>
 
-                {/* Date chips */}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {r.dates.map(d => {
-                    const isAnytime = d.mode === 'anytime'
-                    const blocks    = d.blocks || []
-                    const hasTime   = d.timeStart && d.timeEnd
-                    const timeLabel = hasTime ? `${formatTime(d.timeStart)} – ${formatTime(d.timeEnd)}` : blocks.map(b => BLOCK_LABELS[b]).filter(Boolean).join('·')
+                    const blocks   = d.blocks || []
+                    const isAllday = blocks.includes('allday')
+                    const isAnytime = d.mode === 'anytime' || isAllday
+
+                    let timeLabel = ''
+                    if (scheduleMode === 'exact') {
+                      timeLabel = d.mode !== 'anytime' && d.timeStart && d.timeEnd
+                        ? `${formatTime(d.timeStart)} – ${formatTime(d.timeEnd)}`
+                        : ''
+                    } else {
+                      if (isAllday) {
+                        timeLabel = ''
+                      } else if (d.timeStart && d.timeEnd) {
+                        timeLabel = `${formatTime(d.timeStart)} – ${formatTime(d.timeEnd)}`
+                      } else if (blocks.length > 0) {
+                        timeLabel = blocks.map(b => BLOCK_LABELS[b]).filter(Boolean).join('·')
+                      }
+                    }
+
                     return (
                       <span key={d.date} style={{
                         padding: '4px 10px',
                         background: isAnytime ? 'var(--success-bg)' : 'var(--secondary-bg)',
-                        border: `1px solid ${isAnytime ? '#bbf7d0' : 'var(--secondary-border)'}`,
+                        border: `1px solid ${isAnytime ? 'var(--border)' : 'var(--secondary-border)'}`,
                         borderRadius: 20, fontSize: 12, fontWeight: 600,
                         color: isAnytime ? 'var(--primary)' : 'var(--secondary-text)',
                       }}>
                         {formatDateShort(d.date)}
-                        {!isAnytime && timeLabel && (
-                          <span style={{ fontWeight: 400, marginLeft: 4 }}>{timeLabel}</span>
-                        )}
+                        {timeLabel && <span style={{ fontWeight: 400, marginLeft: 4 }}>{timeLabel}</span>}
                       </span>
                     )
                   })}

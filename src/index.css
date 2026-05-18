@@ -363,7 +363,7 @@ html, body, #root {
 /* ── Success card ───────────────────────────────────────── */
 .success-card {
   background: var(--success-bg); border-radius: var(--r-card); padding: 28px 20px;
-  text-align: center; margin-bottom: 24px; border: 1px solid #bbf7d0;
+  text-align: center; margin-bottom: 24px; border: 1px solid var(--border);
 }
 .success-icon {
   width: 52px; height: 52px; background: var(--primary); border-radius: 50%;
@@ -408,7 +408,7 @@ html, body, #root {
 /* ── Availability dots ──────────────────────────────────── */
 .avail-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
 .avail-full    { background: var(--primary); }
-.avail-partial { background: #86efac; }
+.avail-partial { background: var(--success-bg); }
 .avail-none    { background: var(--border); }
 
 /* ── Responsive ─────────────────────────────────────────── */

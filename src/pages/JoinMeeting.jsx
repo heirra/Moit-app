@@ -7,25 +7,16 @@ import Calendar from '../components/Calendar'
 import Layout from '../components/Layout'
 
 /* ── Constants ───────────────────────────────────────────── */
-const TIME_BLOCKS = [
-  { key: 'morning',   label: '오전', start: '09:00', end: '12:00' },
-  { key: 'afternoon', label: '오후', start: '12:00', end: '18:00' },
-  { key: 'evening',   label: '저녁', start: '18:00', end: '22:00' },
+const HUBS_POPULAR = ['강남/역삼', '홍대/신촌', '종로/을지로', '성수/건대', '잠실', '여의도/영등포', '서울역/용산', '사당/교대']
+const HUBS_MORE    = ['왕십리', '혜화', '수원', '동탄', '분당/판교', '인천/부평']
+const HUB_CUSTOM   = '직접 입력'
+
+const FLEX_BLOCKS = [
+  { key: 'morning',   label: '오전' },
+  { key: 'afternoon', label: '오후' },
+  { key: 'evening',   label: '저녁' },
+  { key: 'allday',    label: '하루 가능' },
 ]
-
-const AREA_CATEGORIES = ['서울', '경기', '인천', '강원', '충청', '전라', '경상', '제주', '직접 입력']
-
-const AREA_PLACEHOLDERS = {
-  '서울':     '예: 강남역, 홍대입구, 종로',
-  '경기':     '예: 수원역, 동탄, 성남',
-  '인천':     '예: 부평역, 송도, 인천터미널',
-  '강원':     '예: 춘천, 강릉, 원주',
-  '충청':     '예: 대전, 천안, 청주',
-  '전라':     '예: 광주, 전주, 목포',
-  '경상':     '예: 부산, 대구, 경주',
-  '제주':     '예: 제주시, 서귀포',
-  '직접 입력': '출발 지역을 직접 입력해주세요.',
-}
 
 /* ── Helpers ─────────────────────────────────────────────── */
 function buildTimeOptions() {
@@ -50,12 +41,13 @@ function formatTime(timeStr) {
   return `${period} ${hr}:${String(m).padStart(2, '0')}`
 }
 
-// dateSettings[date] = { mode, block, blocks, timeStart, timeEnd }
-function emptyDateSetting() {
-  return { mode: 'anytime', block: null, blocks: [], timeStart: '', timeEnd: '' }
+function emptyDateSetting(scheduleMode) {
+  if (scheduleMode === 'exact') {
+    return { mode: 'exact', timeStart: '09:00', timeEnd: '18:00', blocks: [] }
+  }
+  return { mode: 'flexible', blocks: [], timeStart: '', timeEnd: '' }
 }
 
-// Computed once at module level — 48 options (00:00–23:30, every 30 min)
 const TIME_OPTIONS = buildTimeOptions()
 
 /* ── Icons ───────────────────────────────────────────────── */
@@ -67,74 +59,178 @@ function XIcon() {
   )
 }
 
-/* ── Time range picker sub-component ────────────────────── */
-function TimeRangePicker({ setting, onSelectBlock, onChangeStart, onChangeEnd }) {
+/* ── Hub section (only when placeMode === 'middle') ──────── */
+function HubSection({ startingHub, startingDetail, showMore, onSelectHub, onToggleMore, onChangeDetail }) {
+  const displayed = showMore
+    ? [...HUBS_POPULAR, ...HUBS_MORE, HUB_CUSTOM]
+    : [...HUBS_POPULAR, HUB_CUSTOM]
+
   return (
-    <div>
-      {/* Quick block buttons */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        {TIME_BLOCKS.map(b => (
+    <div className="form-group" style={{ marginBottom: 24 }}>
+      <label className="form-label">출발 거점 <span>(선택)</span></label>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+        중간 장소 추천을 원하면 출발 거점을 알려주세요.
+      </p>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+        건너뛰어도 참여할 수 있어요.
+      </p>
+
+      <div className="chip-row" style={{ marginBottom: 8 }}>
+        {displayed.map(hub => (
+          <button
+            key={hub}
+            className={`chip-pill${startingHub === hub ? ' selected' : ''}`}
+            onClick={() => onSelectHub(hub)}
+          >
+            {hub}
+          </button>
+        ))}
+      </div>
+
+      {!showMore && (
+        <button
+          style={{
+            fontSize: 12, color: 'var(--text-secondary)', background: 'none', border: 'none',
+            cursor: 'pointer', padding: '4px 0', fontFamily: 'var(--font)', textDecoration: 'underline',
+          }}
+          onClick={onToggleMore}
+        >
+          더 보기
+        </button>
+      )}
+
+      {startingHub === HUB_CUSTOM && (
+        <input
+          className="form-input"
+          style={{ marginTop: 8 }}
+          placeholder="출발 지역을 직접 입력해주세요."
+          value={startingDetail}
+          onChange={e => onChangeDetail(e.target.value)}
+          maxLength={40}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ── Exact mode: per-date time pickers ───────────────────── */
+function ExactDateCard({ d, s, onSetMode, onChangeStart, onChangeEnd }) {
+  return (
+    <div className="card">
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{formatDate(d)}</div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: s.mode !== 'anytime' ? 14 : 0 }}>
+        <button
+          className={`chip-pill${s.mode === 'anytime' ? ' selected' : ''}`}
+          onClick={() => onSetMode(d, 'anytime')}
+        >
+          하루 가능
+        </button>
+        <button
+          className={`chip-pill${s.mode !== 'anytime' ? ' selected' : ''}`}
+          onClick={() => onSetMode(d, 'exact')}
+        >
+          시간 선택
+        </button>
+      </div>
+
+      {s.mode !== 'anytime' && (
+        <div style={{ background: 'var(--bg-muted)', borderRadius: 9, padding: '14px 14px 12px' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 5 }}>시작</div>
+              <select
+                className="form-input"
+                style={{ height: 40, fontSize: 14, paddingLeft: 10, cursor: 'pointer' }}
+                value={s.timeStart}
+                onChange={e => onChangeStart(d, e.target.value)}
+              >
+                {TIME_OPTIONS.map(o => <option key={o.val} value={o.val}>{o.label}</option>)}
+              </select>
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 18, flexShrink: 0 }}>–</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 5 }}>종료</div>
+              <select
+                className="form-input"
+                style={{ height: 40, fontSize: 14, paddingLeft: 10, cursor: 'pointer' }}
+                value={s.timeEnd}
+                onChange={e => onChangeEnd(d, e.target.value)}
+              >
+                {TIME_OPTIONS.map(o => <option key={o.val} value={o.val}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {s.timeStart && s.timeEnd && (
+            <div style={{
+              display: 'inline-flex', alignItems: 'center',
+              padding: '4px 12px', background: 'var(--success-bg)',
+              borderRadius: 20, fontSize: 12, fontWeight: 700, color: 'var(--primary)',
+            }}>
+              {formatTime(s.timeStart)} – {formatTime(s.timeEnd)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Flexible mode: broad blocks + optional time ─────────── */
+function FlexDateCard({ d, s, onToggleBlock, onChangeStart, onChangeEnd }) {
+  const blocks   = s.blocks || []
+  const isAllday = blocks.includes('allday')
+  const hasBlocks = blocks.length > 0
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{formatDate(d)}</div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: hasBlocks && !isAllday ? 14 : 0 }}>
+        {FLEX_BLOCKS.map(b => (
           <button
             key={b.key}
-            className={`time-block-btn${setting.block === b.key ? ' selected' : ''}`}
-            onClick={() => onSelectBlock(b)}
+            className={`chip-pill${blocks.includes(b.key) ? ' selected' : ''}`}
+            onClick={() => onToggleBlock(d, b.key)}
           >
             {b.label}
           </button>
         ))}
       </div>
 
-      {/* Detailed time adjustment — shown once a block is selected */}
-      {setting.block && (
-        <div style={{ background: 'var(--bg-muted)', borderRadius: 9, padding: '14px 14px 12px' }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
-            {/* Start time */}
+      {/* Optional detailed time — shown only if non-allday blocks selected */}
+      {hasBlocks && !isAllday && (
+        <div style={{ background: 'var(--bg-muted)', borderRadius: 9, padding: '12px 14px' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, fontWeight: 500 }}>
+            세부 시간 조정 (선택)
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 5 }}>시작</div>
               <select
                 className="form-input"
                 style={{ height: 40, fontSize: 14, paddingLeft: 10, cursor: 'pointer' }}
-                value={setting.timeStart}
-                onChange={e => onChangeStart(e.target.value)}
+                value={s.timeStart}
+                onChange={e => onChangeStart(d, e.target.value)}
               >
-                {TIME_OPTIONS.map(o => (
-                  <option key={o.val} value={o.val}>{o.label}</option>
-                ))}
+                <option value="">선택 안 함</option>
+                {TIME_OPTIONS.map(o => <option key={o.val} value={o.val}>{o.label}</option>)}
               </select>
             </div>
-
             <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 18, flexShrink: 0 }}>–</div>
-
-            {/* End time */}
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 5 }}>종료</div>
               <select
                 className="form-input"
                 style={{ height: 40, fontSize: 14, paddingLeft: 10, cursor: 'pointer' }}
-                value={setting.timeEnd}
-                onChange={e => onChangeEnd(e.target.value)}
+                value={s.timeEnd}
+                onChange={e => onChangeEnd(d, e.target.value)}
               >
-                {TIME_OPTIONS.map(o => (
-                  <option key={o.val} value={o.val}>{o.label}</option>
-                ))}
+                <option value="">선택 안 함</option>
+                {TIME_OPTIONS.map(o => <option key={o.val} value={o.val}>{o.label}</option>)}
               </select>
             </div>
           </div>
-
-          {/* Time summary chip */}
-          {setting.timeStart && setting.timeEnd && (
-            <div style={{
-              display: 'inline-flex', alignItems: 'center',
-              padding: '4px 12px',
-              background: 'var(--success-bg)',
-              border: '1px solid #bbf7d0',
-              borderRadius: 20,
-              fontSize: 12, fontWeight: 700,
-              color: 'var(--primary)',
-            }}>
-              {formatTime(setting.timeStart)} – {formatTime(setting.timeEnd)}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -148,18 +244,18 @@ export default function JoinMeeting() {
   const [params] = useSearchParams()
   const { msg, show } = useToast()
 
-  // Host mode: host enters their own availability right after creating the meeting
   const isHost    = params.get('host') === 'true'
   const hostToken = params.get('token') || ''
 
   const meeting = getMeeting(id)
 
-  const [name,          setName]         = useState('')
-  const [areaCategory,  setAreaCategory] = useState('')
-  const [areaDetail,    setAreaDetail]   = useState('')
-  const [selectedDates, setDates]        = useState([])
-  const [dateSettings,  setSettings]     = useState({})
-  const [submitted,     setSubmitted]    = useState(false)
+  const [name,           setName]           = useState('')
+  const [startingHub,    setStartingHub]    = useState('')
+  const [startingDetail, setStartingDetail] = useState('')
+  const [showMoreHubs,   setShowMoreHubs]   = useState(false)
+  const [selectedDates,  setDates]          = useState([])
+  const [dateSettings,   setSettings]       = useState({})
+  const [submitted,      setSubmitted]      = useState(false)
 
   if (!meeting) {
     return (
@@ -174,14 +270,17 @@ export default function JoinMeeting() {
     )
   }
 
-  /* ── Date selection ──────────────────────────────────── */
+  const scheduleMode = meeting.scheduleMode || 'flexible'
+  const showArea     = meeting.placeMode === 'middle'
+
+  /* ── Date selection ──────────────────────────────────────── */
   function toggleDate(dateStr) {
     if (selectedDates.includes(dateStr)) {
       setDates(prev => prev.filter(d => d !== dateStr))
       setSettings(s => { const n = { ...s }; delete n[dateStr]; return n })
     } else {
       setDates(prev => [...prev, dateStr].sort())
-      setSettings(s => ({ ...s, [dateStr]: s[dateStr] || emptyDateSetting() }))
+      setSettings(s => ({ ...s, [dateStr]: s[dateStr] || emptyDateSetting(scheduleMode) }))
     }
   }
 
@@ -190,35 +289,34 @@ export default function JoinMeeting() {
     setSettings(s => { const n = { ...s }; delete n[dateStr]; return n })
   }
 
-  /* ── Mode toggle ─────────────────────────────────────── */
-  function setMode(date, mode) {
+  /* ── Exact mode: toggle anytime vs timed ────────────────── */
+  function setExactMode(date, mode) {
     setSettings(s => ({
       ...s,
-      [date]: { ...(s[date] || emptyDateSetting()), mode, block: null, blocks: [], timeStart: '', timeEnd: '' },
+      [date]: { ...(s[date] || emptyDateSetting('exact')), mode },
     }))
   }
 
-  /* ── Block selection (single) ────────────────────────── */
-  function selectBlock(date, blockDef) {
+  /* ── Flexible mode: multi-select blocks ─────────────────── */
+  function toggleFlexBlock(date, blockKey) {
     setSettings(s => {
-      const cur = s[date] || emptyDateSetting()
-      if (cur.block === blockDef.key) {
-        return { ...s, [date]: { ...cur, block: null, blocks: [] } }
+      const cur    = s[date] || emptyDateSetting('flexible')
+      const blocks = cur.blocks || []
+
+      if (blockKey === 'allday') {
+        const newBlocks = blocks.includes('allday') ? [] : ['allday']
+        return { ...s, [date]: { ...cur, blocks: newBlocks, timeStart: '', timeEnd: '' } }
       }
-      return {
-        ...s,
-        [date]: {
-          ...cur,
-          block:     blockDef.key,
-          blocks:    [blockDef.key],
-          timeStart: blockDef.start,
-          timeEnd:   blockDef.end,
-        },
-      }
+
+      let newBlocks = blocks.filter(b => b !== 'allday')
+      newBlocks = newBlocks.includes(blockKey)
+        ? newBlocks.filter(b => b !== blockKey)
+        : [...newBlocks, blockKey]
+      return { ...s, [date]: { ...cur, blocks: newBlocks } }
     })
   }
 
-  /* ── Time range edit ─────────────────────────────────── */
+  /* ── Time setters ────────────────────────────────────────── */
   function setTimeStart(date, val) {
     setSettings(s => ({ ...s, [date]: { ...s[date], timeStart: val } }))
   }
@@ -226,60 +324,61 @@ export default function JoinMeeting() {
     setSettings(s => ({ ...s, [date]: { ...s[date], timeEnd: val } }))
   }
 
-  /* ── Area helpers ────────────────────────────────────── */
-  function handleAreaCategory(cat) {
-    setAreaCategory(prev => prev === cat ? '' : cat)
-    setAreaDetail('')
+  /* ── Hub selection ───────────────────────────────────────── */
+  function handleHubSelect(hub) {
+    setStartingHub(prev => prev === hub ? '' : hub)
+    if (hub !== HUB_CUSTOM) setStartingDetail('')
   }
 
-  /* ── Submit ──────────────────────────────────────────── */
+  /* ── Submit ──────────────────────────────────────────────── */
   function handleSubmit() {
     if (!name.trim())               { show('이름을 입력해주세요');         return }
     if (selectedDates.length === 0) { show('가능한 날짜를 선택해주세요'); return }
 
-    const areaString = areaCategory
-      ? areaDetail.trim() ? `${areaCategory} / ${areaDetail.trim()}` : areaCategory
-      : ''
+    const areaDisplay = startingHub === HUB_CUSTOM
+      ? startingDetail.trim()
+      : startingHub || ''
 
-    // For the host, use a stable response ID so re-submissions overwrite rather than stack.
     const responseId = isHost ? `host_${id}` : generateId()
 
     saveResponse(id, {
       id: responseId,
       name: name.trim(),
       isHost: isHost || undefined,
-      startingAreaCategory: areaCategory || null,
-      startingAreaDetail:   areaDetail.trim() || null,
-      area: areaString,
+      startingHub: startingHub || null,
+      startingAreaDetail: startingHub === HUB_CUSTOM ? startingDetail.trim() || null : null,
+      area: areaDisplay,
       dates: selectedDates.map(d => {
-        const s = dateSettings[d] || emptyDateSetting()
+        const s = dateSettings[d] || emptyDateSetting(scheduleMode)
         return {
           date:      d,
           mode:      s.mode,
-          block:     s.block   || null,
           blocks:    s.blocks  || [],
-          timeStart: s.mode === 'time' ? (s.timeStart || '') : '',
-          timeEnd:   s.mode === 'time' ? (s.timeEnd   || '') : '',
+          timeStart: s.timeStart || '',
+          timeEnd:   s.timeEnd   || '',
         }
       }),
       submittedAt: new Date().toISOString(),
     })
 
     if (isHost) {
-      // Host → go to the share/completion screen
       navigate(`/meeting/${id}/created?token=${hostToken}`)
     } else {
       setSubmitted(true)
     }
   }
 
-  /* ── Guest success screen ────────────────────────────── */
+  /* ── Guest success screen ────────────────────────────────── */
   if (submitted) {
     return (
       <div className="page">
         <div className="page-content">
           <div className="empty-state" style={{ minHeight: 'calc(100vh - 60px)' }}>
-            <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'var(--success-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8 }}>
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%',
+              background: 'var(--success-bg)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8,
+            }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
@@ -296,14 +395,12 @@ export default function JoinMeeting() {
     )
   }
 
-  /* ── Page title and helper text ──────────────────────── */
-  const pageTitle  = isHost ? '내 가능 시간 입력' : meeting.name
-  const helperText = isHost
+  const pageTitle   = isHost ? '내 가능 시간 입력' : meeting.name
+  const helperText  = isHost
     ? '약속을 만든 사람도 가능한 시간을 먼저 입력해 주세요.'
     : '가능한 날짜와 시간을 선택해주세요.'
   const submitLabel = isHost ? '내 시간 저장하고 공유하기' : '선택 완료'
 
-  /* ── Main form ───────────────────────────────────────── */
   return (
     <Layout title={pageTitle} onBack={isHost ? undefined : () => navigate('/')}>
       <div className="page-content">
@@ -311,47 +408,26 @@ export default function JoinMeeting() {
           {helperText}
         </p>
 
-        {/* ── Name ─────────────────────────────────────── */}
+        {/* ── Name ─────────────────────────────────────────── */}
         <div className="form-group">
           <label className="form-label">이름</label>
           <input className="form-input" placeholder="예) 김모잇"
             value={name} onChange={e => setName(e.target.value)} maxLength={20} />
         </div>
 
-        {/* ── Starting area ────────────────────────────── */}
-        <div className="form-group" style={{ marginBottom: 24 }}>
-          <label className="form-label">
-            출발 지역 <span>(선택)</span>
-          </label>
-          <div className="chip-row" style={{ marginBottom: areaCategory ? 10 : 0 }}>
-            {AREA_CATEGORIES.map(cat => (
-              <button
-                key={cat}
-                className={`chip-pill${areaCategory === cat ? ' selected' : ''}`}
-                onClick={() => handleAreaCategory(cat)}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-          {areaCategory && (
-            <input
-              className="form-input"
-              style={{ marginTop: 6 }}
-              placeholder={AREA_PLACEHOLDERS[areaCategory] || '출발 지역을 입력해주세요.'}
-              value={areaDetail}
-              onChange={e => setAreaDetail(e.target.value)}
-              maxLength={40}
-            />
-          )}
-          {meeting.placeMode === 'middle' && (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-              중간 장소 추천에 활용돼요.
-            </div>
-          )}
-        </div>
+        {/* ── Starting hub (only for middle place mode) ─────── */}
+        {showArea && (
+          <HubSection
+            startingHub={startingHub}
+            startingDetail={startingDetail}
+            showMore={showMoreHubs}
+            onSelectHub={handleHubSelect}
+            onToggleMore={() => setShowMoreHubs(true)}
+            onChangeDetail={v => setStartingDetail(v)}
+          />
+        )}
 
-        {/* ── Calendar ─────────────────────────────────── */}
+        {/* ── Calendar ─────────────────────────────────────── */}
         <div className="section">
           <div className="section-title">
             날짜 선택
@@ -378,43 +454,28 @@ export default function JoinMeeting() {
           )}
         </div>
 
-        {/* ── Per-date time settings ────────────────────── */}
+        {/* ── Per-date time settings ────────────────────────── */}
         {selectedDates.length > 0 && (
           <div className="section">
             <div className="section-title">날짜별 가능 시간</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {selectedDates.map(d => {
-                const s = dateSettings[d] || emptyDateSetting()
+                const s = dateSettings[d] || emptyDateSetting(scheduleMode)
+                if (scheduleMode === 'exact') {
+                  return (
+                    <ExactDateCard key={d} d={d} s={s}
+                      onSetMode={setExactMode}
+                      onChangeStart={setTimeStart}
+                      onChangeEnd={setTimeEnd}
+                    />
+                  )
+                }
                 return (
-                  <div key={d} className="card">
-                    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{formatDate(d)}</div>
-
-                    {/* Mode toggle */}
-                    <div style={{ display: 'flex', gap: 8, marginBottom: s.mode === 'time' ? 14 : 0 }}>
-                      <button
-                        className={`chip-pill${s.mode === 'anytime' ? ' selected' : ''}`}
-                        onClick={() => setMode(d, 'anytime')}
-                      >
-                        하루 아무 때나
-                      </button>
-                      <button
-                        className={`chip-pill${s.mode === 'time' ? ' selected' : ''}`}
-                        onClick={() => setMode(d, 'time')}
-                      >
-                        시간 선택
-                      </button>
-                    </div>
-
-                    {/* Time detail */}
-                    {s.mode === 'time' && (
-                      <TimeRangePicker
-                        setting={s}
-                        onSelectBlock={blockDef => selectBlock(d, blockDef)}
-                        onChangeStart={val => setTimeStart(d, val)}
-                        onChangeEnd={val => setTimeEnd(d, val)}
-                      />
-                    )}
-                  </div>
+                  <FlexDateCard key={d} d={d} s={s}
+                    onToggleBlock={toggleFlexBlock}
+                    onChangeStart={setTimeStart}
+                    onChangeEnd={setTimeEnd}
+                  />
                 )
               })}
             </div>
