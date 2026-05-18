@@ -3,54 +3,233 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMeeting, getResponses, clearResponses, deleteMeeting, getOwnerToken,
 } from '../lib/storage'
-import { copyToClipboard, formatDate, formatDateShort, getDatesBetween } from '../lib/utils'
+import { copyToClipboard, toDateString, formatDate, formatDateShort, getDatesBetween } from '../lib/utils'
 import { useToast, ToastPortal } from '../components/Toast'
-import Calendar from '../components/Calendar'
 import Layout from '../components/Layout'
 
+/* ── Constants ───────────────────────────────────────────── */
+const BLOCK_DEFS = [
+  { key: 'morning',   label: '오전', timeStart: '09:00', timeEnd: '12:00' },
+  { key: 'afternoon', label: '오후', timeStart: '12:00', timeEnd: '18:00' },
+  { key: 'evening',   label: '저녁', timeStart: '18:00', timeEnd: '22:00' },
+]
 const BLOCK_LABELS = { morning: '오전', afternoon: '오후', evening: '저녁' }
+const DOW_KR = ['일', '월', '화', '수', '목', '금', '토']
 
-/* ── helpers ──────────────────────────────────────────────── */
-function computeRecs(responses, meeting) {
-  const total = responses.length
-  if (!total) return []
-  const dates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
-  const scores = {}
-  for (const d of dates) {
-    const count = responses.filter(r => r.dates.some(x => x.date === d)).length
-    if (count) scores[d] = count
+/* ── Display helpers ─────────────────────────────────────── */
+function getAreaDisplay(r) {
+  if (r.startingAreaCategory) {
+    const detail = r.startingAreaDetail?.trim()
+    return detail ? `${r.startingAreaCategory} / ${detail}` : r.startingAreaCategory
   }
-  return Object.entries(scores)
-    .sort((a, b) => b[1] - a[1])
+  if (r.area?.trim()) return r.area.trim()
+  return null
+}
+
+function formatTime(timeStr) {
+  if (!timeStr) return ''
+  const [h, m] = timeStr.split(':').map(Number)
+  const period = h >= 12 ? '오후' : '오전'
+  const hr     = h === 0 ? 12 : h > 12 ? h - 12 : h
+  return `${period} ${hr}:${String(m).padStart(2, '0')}`
+}
+
+/* ── Data computation ────────────────────────────────────── */
+function computeAll(responses, meeting) {
+  const total    = responses.length
+  const allDates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
+
+  // Per-date: how many participants can make it
+  const dateCounts = {}
+  for (const d of allDates) {
+    const count = responses.filter(r => r.dates.some(x => x.date === d)).length
+    if (count > 0) dateCounts[d] = { count, total }
+  }
+  const possibleDatesCount = Object.keys(dateCounts).length
+
+  // Per-block slots across all dates
+  const blockSlots = []
+  if (total > 0) {
+    for (const d of allDates) {
+      const anyHere = responses.some(r => r.dates.some(x => x.date === d))
+      if (!anyHere) continue
+      for (const bd of BLOCK_DEFS) {
+        let count = 0
+        for (const r of responses) {
+          const rd = r.dates.find(x => x.date === d)
+          if (!rd) continue
+          if (rd.mode === 'anytime') { count++; continue }
+          if (rd.mode === 'time') {
+            if (rd.blocks?.includes(bd.key)) { count++; continue }
+            if (rd.timeStart && rd.timeEnd) {
+              if (rd.timeStart < bd.timeEnd && rd.timeEnd > bd.timeStart) { count++; continue }
+            }
+          }
+        }
+        if (count > 0) {
+          blockSlots.push({ date: d, block: bd.key, blockLabel: bd.label, timeStart: bd.timeStart, timeEnd: bd.timeEnd, count, total })
+        }
+      }
+    }
+    blockSlots.sort((a, b) => b.count - a.count || a.date.localeCompare(b.date))
+  }
+
+  // Fully-available slots (count === total)
+  const bestSlots = total > 0 ? blockSlots.filter(s => s.count === total) : []
+
+  // Top 3 date-level recommendations
+  const recs = Object.entries(dateCounts)
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .slice(0, 3)
-    .map(([date, count]) => {
+    .map(([date, { count }]) => {
       const blockCounts = {}
       for (const r of responses) {
         const rd = r.dates.find(x => x.date === date)
         if (!rd) continue
-        const keys = rd.mode === 'anytime' ? ['morning', 'afternoon', 'evening'] : rd.blocks
+        const keys = rd.mode === 'anytime' ? ['morning', 'afternoon', 'evening'] : (rd.blocks || [])
         keys.forEach(k => { blockCounts[k] = (blockCounts[k] || 0) + 1 })
       }
       const best = Object.entries(blockCounts).sort((a, b) => b[1] - a[1])[0]
       return { date, count, total, bestBlock: best?.[0] || null }
     })
+
+  return { total, allDates, dateCounts, possibleDatesCount, blockSlots, bestSlots, recs }
 }
 
-function buildColors(responses, meeting) {
-  const total = responses.length
-  if (!total) return {}
-  const dates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
-  const out = {}
-  for (const d of dates) {
-    const count = responses.filter(r => r.dates.some(x => x.date === d)).length
-    if (!count) continue
-    const ratio = count / total
-    out[d] = ratio === 1 ? '#bbf7d0' : ratio >= 0.5 ? '#d1fae5' : '#ecfdf5'
+/* ── Participant availability per cell ───────────────────── */
+function getParticipantCell(r, date) {
+  const rd = r.dates.find(x => x.date === date)
+  if (!rd) return { type: 'none' }
+  if (rd.mode === 'anytime') return { type: 'anytime' }
+  const blocks = rd.blocks || []
+  if (blocks.length > 0) return { type: 'blocks', blocks }
+  if (rd.timeStart && rd.timeEnd) return { type: 'timeRange', timeStart: rd.timeStart, timeEnd: rd.timeEnd }
+  return { type: 'time' }
+}
+
+function cellText(cell) {
+  if (cell.type === 'none')      return '미입력'
+  if (cell.type === 'anytime')   return '가능'
+  if (cell.type === 'blocks') {
+    if (cell.blocks.length === 1) return BLOCK_LABELS[cell.blocks[0]] || '가능'
+    return `${cell.blocks.length}개 구간`
   }
-  return out
+  if (cell.type === 'timeRange') return `${formatTime(cell.timeStart)}`
+  return '가능'
 }
 
-/* ── Icons ────────────────────────────────────────────────── */
+function cellStyle(cell) {
+  const base = { fontSize: 10, fontWeight: 600, borderRadius: 5, padding: '3px 5px', whiteSpace: 'nowrap' }
+  if (cell.type === 'none')    return { ...base, background: 'var(--bg-muted2)', color: 'var(--text-muted)' }
+  if (cell.type === 'anytime') return { ...base, background: 'var(--success-bg)', color: 'var(--primary)' }
+  return { ...base, background: 'var(--secondary-bg)', color: 'var(--secondary-text)', border: '1px solid var(--secondary-border)' }
+}
+
+/* ── Result calendar ─────────────────────────────────────── */
+function ResultCalendar({ meeting, dateCounts, total }) {
+  const rangeStart = meeting.dateRange.start
+  const rangeEnd   = meeting.dateRange.end
+
+  const [year,  setYear]  = useState(() => new Date(rangeStart + 'T00:00:00').getFullYear())
+  const [month, setMonth] = useState(() => new Date(rangeStart + 'T00:00:00').getMonth())
+
+  function prevMonth() {
+    if (month === 0) { setMonth(11); setYear(y => y - 1) } else setMonth(m => m - 1)
+  }
+  function nextMonth() {
+    if (month === 11) { setMonth(0); setYear(y => y + 1) } else setMonth(m => m + 1)
+  }
+
+  const firstDow    = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const canPrev = new Date(year, month, 1) > new Date(rangeStart + 'T00:00:00')
+  const canNext = new Date(year, month + 1, 0) < new Date(rangeEnd + 'T00:00:00')
+
+  function inRange(dateStr) {
+    return dateStr >= rangeStart && dateStr <= rangeEnd
+  }
+
+  function getCellColors(dateStr) {
+    const info = dateCounts[dateStr]
+    if (!info || total === 0) return { bg: null, fg: null }
+    const ratio = info.count / info.total
+    if (ratio === 1)   return { bg: 'var(--primary)', fg: '#ffffff' }
+    if (ratio >= 0.5)  return { bg: '#bbf7d0',        fg: 'var(--primary)' }
+    return               { bg: '#ECFCCB',        fg: 'var(--secondary-text)' }
+  }
+
+  const cells = []
+  for (let i = 0; i < firstDow; i++) cells.push(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+
+  return (
+    <div className="calendar">
+      {/* Header */}
+      <div className="calendar-header">
+        <button className="calendar-nav" onClick={prevMonth} disabled={!canPrev}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 3.5L6 8l4 4.5"/></svg>
+        </button>
+        <span className="calendar-month">{year}년 {month + 1}월</span>
+        <button className="calendar-nav" onClick={nextMonth} disabled={!canNext}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3.5l4 4.5-4 4.5"/></svg>
+        </button>
+      </div>
+
+      {/* Day-of-week header */}
+      <div className="calendar-grid">
+        {DOW_KR.map(d => <div key={d} className="calendar-dow">{d}</div>)}
+
+        {cells.map((day, idx) => {
+          if (!day) return <div key={`e${idx}`} />
+          const dateStr = toDateString(new Date(year, month, day))
+          const ok      = inRange(dateStr)
+          const info    = dateCounts[dateStr]
+          const { bg, fg } = getCellColors(dateStr)
+          const col = idx % 7
+
+          if (!ok) {
+            return (
+              <div key={dateStr} className="cal-day-wrap">
+                <div style={{ width: 34, height: 50, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'var(--border)' }}>
+                  <span style={{ fontSize: 13 }}>{day}</span>
+                </div>
+              </div>
+            )
+          }
+
+          // Day outside range but in month
+          const sunStyle = col === 0 ? { color: '#ef4444' } : col === 6 ? { color: '#3b82f6' } : {}
+
+          return (
+            <div key={dateStr} className="cal-day-wrap">
+              <div style={{
+                width: 36,
+                height: 50,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 8,
+                background: bg || 'transparent',
+                color: bg ? fg : (sunStyle.color || 'var(--text-primary)'),
+                transition: 'background .15s',
+              }}>
+                <span style={{ fontSize: 13, fontWeight: bg ? 700 : 500, lineHeight: 1.2 }}>{day}</span>
+                {info && total > 0 && (
+                  <span style={{ fontSize: 10, fontWeight: 600, lineHeight: 1.2, marginTop: 2, opacity: 0.85 }}>
+                    {info.count}/{info.total}
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/* ── Icons ───────────────────────────────────────────────── */
 function ShareIcon() {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
 }
@@ -73,14 +252,14 @@ function ChevronDown() {
   return <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4l4 4 4-4"/></svg>
 }
 
-/* ── Main component ───────────────────────────────────────── */
+/* ── Main component ──────────────────────────────────────── */
 export default function Results() {
-  const { id }          = useParams()
-  const navigate        = useNavigate()
-  const [params]        = useSearchParams()
-  const token           = params.get('token') || ''
-  const { msg, show }   = useToast()
-  const [tab, setTab]   = useState('summary')
+  const { id }        = useParams()
+  const navigate      = useNavigate()
+  const [params]      = useSearchParams()
+  const token         = params.get('token') || ''
+  const { msg, show } = useToast()
+  const [tab, setTab] = useState('summary')
   const [ownerOpen, setOwnerOpen] = useState(false)
 
   const meeting   = getMeeting(id)
@@ -103,24 +282,16 @@ export default function Results() {
   const ownerToken = getOwnerToken(id)
   const isOwner    = token && token === ownerToken
   const joinUrl    = `${window.location.origin}/join/${id}`
-  const recs       = computeRecs(responses, meeting)
-  const colors     = buildColors(responses, meeting)
+  const stats      = computeAll(responses, meeting)
 
-  function handleCopy() {
-    copyToClipboard(joinUrl).then(() => show('링크가 복사됐어요!'))
-  }
-
+  function handleCopy()  { copyToClipboard(joinUrl).then(() => show('링크가 복사됐어요!')) }
   function handleClear() {
     if (!window.confirm('모든 응답을 초기화할까요? 되돌릴 수 없어요.')) return
-    clearResponses(id)
-    show('응답이 초기화됐어요')
-    window.location.reload()
+    clearResponses(id); show('응답이 초기화됐어요'); window.location.reload()
   }
-
   function handleDelete() {
     if (!window.confirm(`"${meeting.name}" 약속을 삭제할까요? 되돌릴 수 없어요.`)) return
-    deleteMeeting(id)
-    navigate('/')
+    deleteMeeting(id); navigate('/')
   }
 
   const rightSlot = (
@@ -144,13 +315,10 @@ export default function Results() {
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
             {formatDateShort(meeting.dateRange.start)} ~ {formatDateShort(meeting.dateRange.end)} · {meeting.type} · {meeting.duration}
           </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-muted)', borderRadius: 9, padding: '10px 14px', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>
-            <InfoIcon /> 결과는 참여자에게만 표시돼요.
-          </div>
         </div>
 
-        {tab === 'summary' && <SummaryTab meeting={meeting} responses={responses} recs={recs} colors={colors} />}
-        {tab === 'friend'  && <FriendTab  meeting={meeting} responses={responses} colors={colors} />}
+        {tab === 'summary' && <SummaryTab meeting={meeting} responses={responses} stats={stats} />}
+        {tab === 'friend'  && <FriendTab  meeting={meeting} responses={responses} stats={stats} />}
 
         {/* Owner menu */}
         {isOwner && (
@@ -159,13 +327,11 @@ export default function Results() {
               style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', padding: '8px 0', fontFamily: 'var(--font)' }}
               onClick={() => setOwnerOpen(o => !o)}
             >
-              <InfoIcon />
-              소유자 메뉴
+              <InfoIcon /> 소유자 메뉴
               <span style={{ display: 'inline-flex', transform: ownerOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>
                 <ChevronDown />
               </span>
             </button>
-
             {ownerOpen && (
               <div className="owner-actions">
                 <button className="owner-action-btn" onClick={handleCopy}><LinkIcon /> 참여 링크 복사</button>
@@ -187,28 +353,107 @@ export default function Results() {
   )
 }
 
-/* ── Summary tab ──────────────────────────────────────────── */
-function SummaryTab({ meeting, responses, recs, colors }) {
-  const total = responses.length
+/* ── Summary tab ─────────────────────────────────────────── */
+function SummaryTab({ meeting, responses, stats }) {
+  const { total, allDates, dateCounts, possibleDatesCount, bestSlots, recs } = stats
 
   return (
     <div style={{ padding: '0 20px' }}>
-      {/* Calendar */}
+
+      {/* ── Stat summary cards ── */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        {[
+          { label: '참여자',       value: `${total}명` },
+          { label: '가능 날짜',    value: `${possibleDatesCount}/${allDates.length}일` },
+          { label: '모두 가능한 시간', value: `${bestSlots.length}개` },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            flex: 1,
+            background: 'var(--bg-muted)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '12px 10px',
+            textAlign: 'center',
+            minWidth: 0,
+          }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 3 }}>{value}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Best time highlight ── */}
+      {total > 0 && (
+        bestSlots.length > 0 ? (
+          <div style={{
+            background: 'var(--success-bg)',
+            border: '1px solid #bbf7d0',
+            borderRadius: 12,
+            padding: '16px',
+            marginBottom: 24,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+              모두 가능한 최적 시간
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {bestSlots.slice(0, 3).map((s, i) => (
+                <div key={`${s.date}-${s.block}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {i === 0 && (
+                    <div style={{ width: 20, height: 20, borderRadius: '50%', background: 'var(--primary)', color: 'white', fontSize: 11, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>1</div>
+                  )}
+                  {i > 0 && (
+                    <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#bbf7d0', color: 'var(--primary)', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{i + 1}</div>
+                  )}
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {formatDateShort(s.date)}
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--primary)', marginLeft: 8 }}>
+                      {s.blockLabel} ({formatTime(s.timeStart)} – {formatTime(s.timeEnd)})
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', flexShrink: 0 }}>
+                    {s.count}/{s.total}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--primary)', marginTop: 10, opacity: .7 }}>
+              참여자 {total}명 모두 가능
+            </div>
+          </div>
+        ) : (
+          <div style={{
+            background: 'var(--bg-muted)',
+            border: '1px solid var(--border)',
+            borderRadius: 12,
+            padding: '16px',
+            marginBottom: 24,
+            fontSize: 13,
+            color: 'var(--text-secondary)',
+            lineHeight: 1.6,
+          }}>
+            <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>아직 모두 가능한 시간이 없어요.</div>
+            가장 많이 겹치는 시간을 아래에서 확인해 주세요.
+          </div>
+        )
+      )}
+
+      {/* ── Calendar with availability counts ── */}
       <div className="section">
-        <div className="section-title">캘린더로 보기</div>
+        <div className="section-title">날짜별 가능 인원</div>
         <div className="calendar-wrapper">
-          <Calendar
-            selectedDates={[]}
-            rangeStart={meeting.dateRange.start}
-            rangeEnd={meeting.dateRange.end}
-            dateColors={colors}
-          />
+          <ResultCalendar meeting={meeting} dateCounts={dateCounts} total={total} />
         </div>
         {total > 0 && (
-          <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
-            {[['#bbf7d0','모두 가능'],['#d1fae5','일부 가능'],['var(--border)','불가']].map(([bg,label]) => (
+          <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+            {[
+              { bg: 'var(--primary)', fg: 'white',                  label: '모두 가능' },
+              { bg: '#bbf7d0',        fg: 'var(--primary)',          label: '절반 이상' },
+              { bg: '#ECFCCB',        fg: 'var(--secondary-text)',   label: '일부 가능' },
+            ].map(({ bg, fg, label }) => (
               <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: bg, display: 'inline-block' }} />
+                <span style={{ width: 14, height: 14, borderRadius: 4, background: bg, display: 'inline-block', flexShrink: 0 }} />
                 {label}
               </span>
             ))}
@@ -216,9 +461,9 @@ function SummaryTab({ meeting, responses, recs, colors }) {
         )}
       </div>
 
-      {/* Top 3 */}
+      {/* ── Top 3 recommendations ── */}
       <div className="section">
-        <div className="section-title">추천 시간 TOP {recs.length || 3}</div>
+        <div className="section-title">추천 시간 TOP {Math.min(recs.length, 3) || 3}</div>
         {!total ? (
           <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>아직 응답이 없어요.</div>
         ) : !recs.length ? (
@@ -227,11 +472,11 @@ function SummaryTab({ meeting, responses, recs, colors }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {recs.map((rec, i) => (
               <div key={rec.date} className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: i === 0 ? 'var(--primary)' : 'var(--text-muted)', width: 24, flexShrink: 0, textAlign: 'center' }}>
+                <div style={{ fontSize: 20, fontWeight: 800, color: i === 0 ? 'var(--primary)' : 'var(--text-muted)', width: 22, flexShrink: 0, textAlign: 'center' }}>
                   {i + 1}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
                     {formatDate(rec.date)}
                     {rec.bestBlock && (
                       <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 6 }}>
@@ -243,7 +488,7 @@ function SummaryTab({ meeting, responses, recs, colors }) {
                     <div className="result-bar" style={{ width: `${(rec.count / rec.total) * 100}%` }} />
                   </div>
                 </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--primary)', flexShrink: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: rec.count === rec.total ? 'var(--primary)' : 'var(--text-secondary)', flexShrink: 0 }}>
                   {rec.count}/{rec.total}
                 </div>
               </div>
@@ -252,18 +497,29 @@ function SummaryTab({ meeting, responses, recs, colors }) {
         )}
       </div>
 
-      {/* Participants */}
+      {/* ── Participant list ── */}
       <div className="section">
         <div className="section-title">참여자 {total}명</div>
         {!total ? (
           <div style={{ fontSize: 14, color: 'var(--text-muted)', padding: '8px 0' }}>아직 응답한 친구가 없어요.</div>
         ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {responses.map(r => (
-              <span key={r.id} style={{ padding: '5px 12px', background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 20, fontSize: 13, fontWeight: 600 }}>
-                {r.name}
-              </span>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {responses.map(r => {
+              const area = getAreaDisplay(r)
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                  {r.isHost && (
+                    <span style={{ fontSize: 10, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '2px 6px', borderRadius: 6 }}>방장</span>
+                  )}
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{r.name}</span>
+                  {area ? (
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· {area}</span>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 출발 지역 미입력</span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
@@ -271,94 +527,137 @@ function SummaryTab({ meeting, responses, recs, colors }) {
   )
 }
 
-/* ── Friend tab ───────────────────────────────────────────── */
-function FriendTab({ meeting, responses, colors }) {
-  const total = responses.length
+/* ── Friend tab ──────────────────────────────────────────── */
+function FriendTab({ meeting, responses, stats }) {
+  const { total, dateCounts } = stats
+
   if (!total) {
     return <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>아직 응답이 없어요.</div>
   }
 
-  // Show only dates that at least one person responded on
-  const dates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
-    .filter(d => colors[d])
-    .slice(0, 7)
+  // Only show dates that at least one person responded on (max 14)
+  const candidateDates = getDatesBetween(meeting.dateRange.start, meeting.dateRange.end)
+    .filter(d => dateCounts[d])
+    .slice(0, 14)
 
   return (
     <div style={{ padding: '0 20px' }}>
-      {/* Dot grid table */}
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: dates.length * 50 }}>
-          <thead>
-            <tr>
-              <th style={{ padding: '8px 8px 8px 0', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textAlign: 'left', width: 80, whiteSpace: 'nowrap' }}>참여자</th>
-              {dates.map(d => (
-                <th key={d} style={{ padding: '8px 4px', fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500, textAlign: 'center', minWidth: 40 }}>
-                  {new Date(d + 'T00:00:00').toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}
-                  <br />
-                  <span style={{ fontWeight: 400, fontSize: 10 }}>
-                    {['일','월','화','수','목','금','토'][new Date(d + 'T00:00:00').getDay()]}
-                  </span>
+
+      {/* ── Grid table ── */}
+      <div className="section">
+        <div className="section-title">참여자별 가능 시간</div>
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ borderCollapse: 'collapse', minWidth: Math.max(candidateDates.length * 58, 200) }}>
+            <thead>
+              <tr>
+                <th style={{ padding: '6px 10px 6px 0', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textAlign: 'left', minWidth: 72, position: 'sticky', left: 0, background: 'var(--bg)', zIndex: 1 }}>
+                  이름
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {responses.map(r => (
-              <tr key={r.id}>
-                <td style={{ padding: '7px 8px 7px 0', fontSize: 13, fontWeight: 600 }}>{r.name}</td>
-                {dates.map(d => {
-                  const rd    = r.dates.find(x => x.date === d)
-                  const state = !rd ? 'none' : rd.mode === 'anytime' ? 'full' : rd.blocks.length ? 'partial' : 'none'
+                {candidateDates.map(d => {
+                  const dt  = new Date(d + 'T00:00:00')
+                  const info = dateCounts[d]
                   return (
-                    <td key={d} style={{ textAlign: 'center', padding: '7px 4px' }}>
-                      <span className={`avail-dot avail-${state}`} />
-                    </td>
+                    <th key={d} style={{ padding: '6px 4px', textAlign: 'center', minWidth: 54, fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500 }}>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 12 }}>
+                        {dt.getMonth() + 1}/{dt.getDate()}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        {DOW_KR[dt.getDay()]}
+                      </div>
+                      {info && (
+                        <div style={{ fontSize: 10, color: info.count === info.total ? 'var(--primary)' : 'var(--text-muted)', fontWeight: 600, marginTop: 2 }}>
+                          {info.count}/{info.total}
+                        </div>
+                      )}
+                    </th>
                   )
                 })}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Legend */}
-      <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
-        {[['full','가능'],['partial','일부 가능'],['none','불가']].map(([k,l]) => (
-          <span key={k} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span className={`avail-dot avail-${k}`} /> {l}
-          </span>
-        ))}
-      </div>
-
-      {/* Per-person detail cards */}
-      <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 8 }}>
-        {responses.map(r => (
-          <div key={r.id} className="card">
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-              {r.name}
-              {r.area && <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>({r.area})</span>}
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400 }}>{r.dates.length}일 응답</span>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {r.dates.map(d => (
-                <span key={d.date} style={{
-                  padding: '4px 10px',
-                  background: d.mode === 'anytime' ? 'var(--success-bg)' : 'var(--secondary-bg)',
-                  border: `1px solid ${d.mode === 'anytime' ? '#bbf7d0' : 'var(--secondary-border)'}`,
-                  borderRadius: 20, fontSize: 12, fontWeight: 600,
-                  color: d.mode === 'anytime' ? 'var(--primary)' : 'var(--secondary-text)',
-                }}>
-                  {formatDateShort(d.date)}
-                  {d.mode === 'time' && d.blocks.length > 0 && (
-                    <span style={{ fontWeight: 400, marginLeft: 4 }}>
-                      {d.blocks.map(b => BLOCK_LABELS[b]).join('·')}
-                    </span>
-                  )}
-                </span>
+            </thead>
+            <tbody>
+              {responses.map(r => (
+                <tr key={r.id} style={{ borderTop: '1px solid var(--border-light)' }}>
+                  <td style={{ padding: '8px 10px 8px 0', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', position: 'sticky', left: 0, background: 'var(--bg)', zIndex: 1 }}>
+                    {r.name}
+                    {r.isHost && <span style={{ fontSize: 9, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '1px 4px', borderRadius: 4, marginLeft: 4 }}>방장</span>}
+                  </td>
+                  {candidateDates.map(d => {
+                    const cell = getParticipantCell(r, d)
+                    return (
+                      <td key={d} style={{ textAlign: 'center', padding: '8px 4px' }}>
+                        <span style={cellStyle(cell)}>{cellText(cell)}</span>
+                      </td>
+                    )
+                  })}
+                </tr>
               ))}
-            </div>
-          </div>
-        ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Legend */}
+        <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+          {[
+            { style: { background: 'var(--success-bg)', color: 'var(--primary)' }, label: '가능' },
+            { style: { background: 'var(--secondary-bg)', color: 'var(--secondary-text)', border: '1px solid var(--secondary-border)' }, label: '시간대' },
+            { style: { background: 'var(--bg-muted2)', color: 'var(--text-muted)' }, label: '미입력' },
+          ].map(({ style, label }) => (
+            <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ ...style, fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>{label}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Per-person detail cards ── */}
+      <div className="section">
+        <div className="section-title">친구별 상세 보기</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {responses.map(r => {
+            const area = getAreaDisplay(r)
+            return (
+              <div key={r.id} className="card">
+                {/* Header */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                    {r.isHost && <span style={{ fontSize: 10, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '2px 6px', borderRadius: 6 }}>방장</span>}
+                    <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{r.name}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400 }}>
+                      {r.dates.length}일 응답
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: area ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                    {area ? `출발: ${area}` : '출발 지역 미입력'}
+                  </div>
+                </div>
+
+                {/* Date chips */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {r.dates.map(d => {
+                    const isAnytime = d.mode === 'anytime'
+                    const blocks    = d.blocks || []
+                    const hasTime   = d.timeStart && d.timeEnd
+                    const timeLabel = hasTime ? `${formatTime(d.timeStart)} – ${formatTime(d.timeEnd)}` : blocks.map(b => BLOCK_LABELS[b]).filter(Boolean).join('·')
+                    return (
+                      <span key={d.date} style={{
+                        padding: '4px 10px',
+                        background: isAnytime ? 'var(--success-bg)' : 'var(--secondary-bg)',
+                        border: `1px solid ${isAnytime ? '#bbf7d0' : 'var(--secondary-border)'}`,
+                        borderRadius: 20, fontSize: 12, fontWeight: 600,
+                        color: isAnytime ? 'var(--primary)' : 'var(--secondary-text)',
+                      }}>
+                        {formatDateShort(d.date)}
+                        {!isAnytime && timeLabel && (
+                          <span style={{ fontWeight: 400, marginLeft: 4 }}>{timeLabel}</span>
+                        )}
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

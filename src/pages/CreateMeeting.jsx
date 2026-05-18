@@ -5,14 +5,24 @@ import { saveMeeting, saveOwnerToken, addMyMeeting } from '../lib/storage'
 import Layout from '../components/Layout'
 
 const TYPES = [
-  { key: '식사',      icon: FoodIcon },
-  { key: '카페',      icon: CafeIcon },
-  { key: '영화',      icon: MovieIcon },
-  { key: '데이트',    icon: HeartIcon },
+  { key: '식사',       icon: FoodIcon },
+  { key: '카페',       icon: CafeIcon },
+  { key: '영화',       icon: MovieIcon },
+  { key: '데이트',     icon: HeartIcon },
   { key: '친구랑 놀기', icon: FriendsIcon },
   { key: '여행/나들이', icon: GlobeIcon },
-  { key: '직접 설정', icon: SettingsIcon },
+  { key: '직접 설정',  icon: SettingsIcon },
 ]
+
+const TYPE_DURATIONS = {
+  '식사':       '2시간',
+  '카페':       '1시간 30분',
+  '영화':       '2시간',
+  '데이트':     '3~4시간',
+  '친구랑 놀기': '3~4시간',
+  '여행/나들이': '반나절',
+  '직접 설정':  '직접 설정',
+}
 
 const DURATIONS = ['1시간', '1시간 30분', '2시간', '3~4시간', '반나절', '하루', '직접 설정']
 
@@ -32,6 +42,14 @@ export default function CreateMeeting() {
 
   function set(key, val) { setForm(f => ({ ...f, [key]: val })) }
 
+  function setType(key) {
+    setForm(f => ({
+      ...f,
+      type: key,
+      duration: TYPE_DURATIONS[key] ?? f.duration,
+    }))
+  }
+
   function canNext() {
     if (step === 1) return form.name.trim().length > 0
     return true
@@ -39,7 +57,7 @@ export default function CreateMeeting() {
 
   function handleNext() {
     if (step < 3) { setStep(s => s + 1); return }
-    const id = generateId(8)
+    const id    = generateId(8)
     const token = generateId(16)
     saveMeeting({
       id, name: form.name.trim(), description: form.description.trim(),
@@ -51,7 +69,8 @@ export default function CreateMeeting() {
     })
     saveOwnerToken(id, token)
     addMyMeeting(id)
-    navigate(`/meeting/${id}/created?token=${token}`)
+    // Host enters their own availability before seeing the share screen
+    navigate(`/join/${id}?host=true&token=${token}`)
   }
 
   return (
@@ -65,7 +84,7 @@ export default function CreateMeeting() {
 
       <div className="page-content">
         {step === 1 && <Step1 form={form} set={set} />}
-        {step === 2 && <Step2 form={form} set={set} />}
+        {step === 2 && <Step2 form={form} set={set} setType={setType} />}
         {step === 3 && <Step3 form={form} />}
       </div>
 
@@ -122,7 +141,7 @@ function Step1({ form, set }) {
 }
 
 /* ── Step 2: type / duration / mode ─────────────────────── */
-function Step2({ form, set }) {
+function Step2({ form, set, setType }) {
   return (
     <>
       <div style={{ marginBottom: 28 }}>
@@ -135,7 +154,7 @@ function Step2({ form, set }) {
         <div className="chip-grid">
           {TYPES.map(({ key, icon: Icon }) => (
             <button key={key} className={`chip${form.type === key ? ' selected' : ''}`}
-              onClick={() => set('type', key)}>
+              onClick={() => setType(key)}>
               <span style={{ color: form.type === key ? 'var(--primary)' : 'var(--text-muted)' }}>
                 <Icon />
               </span>
@@ -146,7 +165,8 @@ function Step2({ form, set }) {
       </div>
 
       <div className="section">
-        <div className="section-title">추천 시간 길이</div>
+        <div className="section-title" style={{ marginBottom: 4 }}>예상 소요 시간</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>결과 추천에 사용할 약속 길이예요.</p>
         <div className="chip-row">
           {DURATIONS.map(d => (
             <button key={d} className={`chip-pill${form.duration === d ? ' selected' : ''}`}
@@ -158,11 +178,12 @@ function Step2({ form, set }) {
       </div>
 
       <div className="section">
-        <div className="section-title">약속 방식</div>
+        <div className="section-title" style={{ marginBottom: 4 }}>시간 고르는 방식</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>참여자가 시간을 얼마나 자세히 고를지 정해요.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
-            { val: 'exact',    title: '정확한 시간으로 잡기', desc: '카페, 스터디, 예약처럼 시간이 정해진 약속' },
-            { val: 'flexible', title: '이유 시간대로 잡기',   desc: '식사, 카페, 데이트처럼 여유롭게 맞추는 약속' },
+            { val: 'exact',    title: '정확한 시간으로 잡기', desc: '시작 시간과 끝 시간이 중요한 약속' },
+            { val: 'flexible', title: '여유 시간대로 잡기',   desc: '오전, 오후, 저녁처럼 넓게 맞추는 약속' },
           ].map(o => (
             <button key={o.val} className={`radio-card${form.scheduleMode === o.val ? ' selected' : ''}`}
               onClick={() => set('scheduleMode', o.val)}>
@@ -203,8 +224,8 @@ function Step3({ form }) {
   const rows = [
     ['약속 이름', form.name],
     ['약속 유형', form.type],
-    ['추천 시간 길이', form.duration],
-    ['약속 방식', form.scheduleMode === 'exact' ? '정확한 시간으로 잡기' : '이유 시간대로 잡기'],
+    ['예상 소요 시간', form.duration],
+    ['시간 고르는 방식', form.scheduleMode === 'exact' ? '정확한 시간으로 잡기' : '여유 시간대로 잡기'],
     ['가능 날짜 범위', `${form.dateStart} ~ ${form.dateEnd}`],
     ['장소 결정 방식', form.placeMode === 'later' ? '나중에 정하기' : '중간 장소 추천 받기'],
     ...(form.description ? [['설명', form.description]] : []),
