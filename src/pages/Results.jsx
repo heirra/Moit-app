@@ -16,13 +16,64 @@ const BLOCK_DEFS = [
 const BLOCK_LABELS = { morning: '오전', afternoon: '오후', evening: '저녁', allday: '하루 가능' }
 const DOW_KR = ['일', '월', '화', '수', '목', '금', '토']
 
-/* ── Display helpers ─────────────────────────────────────── */
-function getHubDisplay(r) {
+/* ── Meeting-place rule engine ───────────────────────────── */
+const PLACE_RULES = [
+  {
+    keywords: ['경기 남부', '수원', '동탄', '분당', '판교', '화성', '안양', '안산', '평택', '오산', '용인', '군포', '의왕', '망포', '광교'],
+    suggestions: ['사당', '양재', '강남'],
+  },
+  {
+    keywords: ['경기 북부', '노원', '의정부', '구리', '도봉', '은평', '창동', '별내', '남양주', '포천', '양주'],
+    suggestions: ['왕십리', '종로', '을지로'],
+  },
+  {
+    keywords: ['인천', '부천', '김포', '경기 서부', '검단', '계양', '청라'],
+    suggestions: ['신도림', '영등포', '홍대'],
+  },
+  {
+    keywords: ['마포', '홍대', '신촌', '상암', '합정', '서울 서부', '은평'],
+    suggestions: ['종로', '을지로', '서울역'],
+  },
+  {
+    keywords: ['잠실', '강동', '성수', '건대', '광진', '송파', '서울 동부', '하남'],
+    suggestions: ['성수', '건대', '왕십리'],
+  },
+]
+
+function getMeetingPlaceSuggestions(responses) {
+  const allText = responses
+    .flatMap(r => [
+      r.startingPlaceText || '',
+      r.startingRegionHint || '',
+      // legacy fields
+      r.startingHub || '',
+      r.area || '',
+    ])
+    .join(' ')
+    .toLowerCase()
+
+  if (!allText.trim()) return []
+
+  const found = new Set()
+  for (const rule of PLACE_RULES) {
+    if (rule.keywords.some(kw => allText.includes(kw.toLowerCase()))) {
+      rule.suggestions.forEach(s => found.add(s))
+    }
+  }
+  return [...found].slice(0, 5)
+}
+
+/* ── Starting-place display helper (handles all legacy formats) */
+function getStartingDisplay(r) {
+  // Current format
+  if (r.startingPlaceText?.trim()) return r.startingPlaceText.trim()
+  if (r.startingRegionHint) return r.startingRegionHint
+  // Legacy: hub chips (previous version)
   if (r.startingHub) {
     if (r.startingHub === '직접 입력') return r.startingAreaDetail?.trim() || null
     return r.startingHub
   }
-  // legacy: old responses used startingAreaCategory / area
+  // Legacy: area category (earlier version)
   if (r.startingAreaCategory) {
     const detail = r.startingAreaDetail?.trim()
     return detail ? `${r.startingAreaCategory} / ${detail}` : r.startingAreaCategory
@@ -56,7 +107,7 @@ function computeAll(responses, meeting) {
   let blockSlots = [], bestSlots = [], recs = []
 
   if (scheduleMode === 'exact') {
-    // Exact mode: find per-date time-range intersections
+    // Exact mode: compute per-date time-range intersections
     const exactSlots = []
     for (const d of allDates) {
       const dateResps = responses.filter(r => r.dates.some(x => x.date === d))
@@ -168,7 +219,7 @@ function cellText(cell) {
   if (cell.type === 'allday')    return '하루 가능'
   if (cell.type === 'exact')     return formatTime(cell.timeStart)
   if (cell.type === 'blocks') {
-    if (cell.blocks.length === 1) return BLOCK_LABELS[cell.blocks[0]] || '가능'
+    if (cell.blocks.length === 1) return `${BLOCK_LABELS[cell.blocks[0]] || '가능'} 가능`
     return cell.blocks.map(b => BLOCK_LABELS[b]).filter(Boolean).join('·')
   }
   if (cell.type === 'timeRange') return formatTime(cell.timeStart)
@@ -204,16 +255,14 @@ function ResultCalendar({ meeting, dateCounts, total }) {
   const canPrev = new Date(year, month, 1) > new Date(rangeStart + 'T00:00:00')
   const canNext = new Date(year, month + 1, 0) < new Date(rangeEnd + 'T00:00:00')
 
-  function inRange(dateStr) {
-    return dateStr >= rangeStart && dateStr <= rangeEnd
-  }
+  function inRange(dateStr) { return dateStr >= rangeStart && dateStr <= rangeEnd }
 
   function getCellColors(dateStr) {
     const info = dateCounts[dateStr]
     if (!info || total === 0) return { bg: null, fg: null }
     const ratio = info.count / info.total
-    if (ratio === 1)  return { bg: 'var(--primary)',     fg: '#ffffff' }
-    if (ratio >= 0.5) return { bg: 'var(--success-bg)',  fg: 'var(--primary)' }
+    if (ratio === 1)  return { bg: 'var(--primary)',      fg: '#ffffff' }
+    if (ratio >= 0.5) return { bg: 'var(--success-bg)',   fg: 'var(--primary)' }
     return                   { bg: 'var(--secondary-bg)', fg: 'var(--secondary-text)' }
   }
 
@@ -235,7 +284,6 @@ function ResultCalendar({ meeting, dateCounts, total }) {
 
       <div className="calendar-grid">
         {DOW_KR.map(d => <div key={d} className="calendar-dow">{d}</div>)}
-
         {cells.map((day, idx) => {
           if (!day) return <div key={`e${idx}`} />
           const dateStr = toDateString(new Date(year, month, day))
@@ -255,7 +303,6 @@ function ResultCalendar({ meeting, dateCounts, total }) {
           }
 
           const sunStyle = col === 0 ? { color: '#ef4444' } : col === 6 ? { color: '#3b82f6' } : {}
-
           return (
             <div key={dateStr} className="cal-day-wrap">
               <div style={{
@@ -277,6 +324,40 @@ function ResultCalendar({ meeting, dateCounts, total }) {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+/* ── Meeting place suggestion section ────────────────────── */
+function MeetingPlaceSection({ responses }) {
+  const suggestions = getMeetingPlaceSuggestions(responses)
+
+  return (
+    <div className="section">
+      <div className="section-title">만날 장소 후보</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+        출발지를 기준으로 만나기 쉬운 생활권 후보예요.
+      </p>
+      {suggestions.length > 0 ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {suggestions.map(s => (
+            <span key={s} style={{
+              padding: '6px 16px',
+              background: 'var(--bg-muted)',
+              border: '1px solid var(--border)',
+              borderRadius: 20,
+              fontSize: 14, fontWeight: 600,
+              color: 'var(--text-primary)',
+            }}>
+              {s}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          출발 장소가 더 모이면 장소 후보를 추천할 수 있어요.
+        </p>
+      )}
     </div>
   )
 }
@@ -391,7 +472,6 @@ export default function Results() {
 /* ── Summary tab ─────────────────────────────────────────── */
 function SummaryTab({ meeting, responses, stats }) {
   const { total, allDates, dateCounts, possibleDatesCount, bestSlots, recs, scheduleMode } = stats
-
   const bestLabel = scheduleMode === 'exact' ? '모두 가능한 날짜' : '모두 가능한 시간'
 
   return (
@@ -469,7 +549,7 @@ function SummaryTab({ meeting, responses, stats }) {
         )
       )}
 
-      {/* ── Calendar with availability counts ── */}
+      {/* ── Calendar ── */}
       <div className="section">
         <div className="section-title">날짜별 가능 인원</div>
         <div className="calendar-wrapper">
@@ -478,9 +558,9 @@ function SummaryTab({ meeting, responses, stats }) {
         {total > 0 && (
           <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
             {[
-              { bg: 'var(--primary)',      fg: 'white',                    label: '모두 가능' },
-              { bg: 'var(--success-bg)',   fg: 'var(--primary)',            label: '절반 이상' },
-              { bg: 'var(--secondary-bg)', fg: 'var(--secondary-text)',     label: '일부 가능' },
+              { bg: 'var(--primary)',      fg: 'white',                  label: '모두 가능' },
+              { bg: 'var(--success-bg)',   fg: 'var(--primary)',          label: '절반 이상' },
+              { bg: 'var(--secondary-bg)', fg: 'var(--secondary-text)',   label: '일부 가능' },
             ].map(({ bg, fg, label }) => (
               <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 14, height: 14, borderRadius: 4, background: bg, display: 'inline-block', flexShrink: 0 }} />
@@ -531,6 +611,11 @@ function SummaryTab({ meeting, responses, stats }) {
         )}
       </div>
 
+      {/* ── Meeting place suggestions (only for middle mode) ── */}
+      {meeting.placeMode === 'middle' && (
+        <MeetingPlaceSection responses={responses} />
+      )}
+
       {/* ── Participant list ── */}
       <div className="section">
         <div className="section-title">참여자 {total}명</div>
@@ -539,7 +624,7 @@ function SummaryTab({ meeting, responses, stats }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {responses.map(r => {
-              const hub = getHubDisplay(r)
+              const place = getStartingDisplay(r)
               return (
                 <div key={r.id} style={{
                   display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
@@ -549,10 +634,10 @@ function SummaryTab({ meeting, responses, stats }) {
                     <span style={{ fontSize: 10, fontWeight: 700, background: 'var(--primary)', color: 'white', padding: '2px 6px', borderRadius: 6 }}>방장</span>
                   )}
                   <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{r.name}</span>
-                  {hub ? (
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· {hub}</span>
+                  {place ? (
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· 출발: {place}</span>
                   ) : (
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 출발 거점 미입력</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 출발 장소 미입력</span>
                   )}
                 </div>
               )
@@ -649,7 +734,7 @@ function FriendTab({ meeting, responses, stats }) {
         <div className="section-title">친구별 상세 보기</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {responses.map(r => {
-            const hub = getHubDisplay(r)
+            const place = getStartingDisplay(r)
             return (
               <div key={r.id} className="card">
                 <div style={{ marginBottom: 10 }}>
@@ -660,15 +745,15 @@ function FriendTab({ meeting, responses, stats }) {
                       {r.dates.length}일 응답
                     </span>
                   </div>
-                  <div style={{ fontSize: 12, color: hub ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
-                    {hub ? `출발: ${hub}` : '출발 거점 미입력'}
+                  <div style={{ fontSize: 12, color: place ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+                    {place ? `출발: ${place}` : '출발 장소 미입력'}
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {r.dates.map(d => {
-                    const blocks   = d.blocks || []
-                    const isAllday = blocks.includes('allday')
+                    const blocks    = d.blocks || []
+                    const isAllday  = blocks.includes('allday')
                     const isAnytime = d.mode === 'anytime' || isAllday
 
                     let timeLabel = ''

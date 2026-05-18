@@ -60,12 +60,16 @@ export default function CreateMeeting() {
     const id    = generateId(8)
     const token = generateId(16)
     saveMeeting({
-      id, name: form.name.trim(), description: form.description.trim(),
-      type: form.type, duration: form.duration,
-      scheduleMode: form.scheduleMode, placeMode: form.placeMode,
-      dateRange: { start: form.dateStart, end: form.dateEnd },
+      id,
+      name:            form.name.trim(),
+      description:     form.description.trim(),
+      type:            form.type,
+      duration:        form.duration,
+      scheduleMode:    form.scheduleMode,
+      placeMode:       form.placeMode,
+      dateRange:       { start: form.dateStart, end: form.dateEnd },
       maxParticipants: form.maxParticipants || null,
-      createdAt: new Date().toISOString(),
+      createdAt:       new Date().toISOString(),
     })
     saveOwnerToken(id, token)
     addMyMeeting(id)
@@ -75,7 +79,6 @@ export default function CreateMeeting() {
 
   return (
     <Layout title="약속 만들기" onBack={step > 1 ? () => setStep(s => s - 1) : undefined}>
-      {/* Step progress */}
       <div className="step-progress">
         {[1, 2, 3].map(s => (
           <div key={s} className={`step-bar${s <= step ? ' active' : ''}`} />
@@ -85,7 +88,7 @@ export default function CreateMeeting() {
       <div className="page-content">
         {step === 1 && <Step1 form={form} set={set} />}
         {step === 2 && <Step2 form={form} set={set} setType={setType} />}
-        {step === 3 && <Step3 form={form} />}
+        {step === 3 && <Step3 form={form} set={set} />}
       </div>
 
       <div className="page-footer">
@@ -97,64 +100,86 @@ export default function CreateMeeting() {
   )
 }
 
-/* ── Step 1: basics ──────────────────────────────────────── */
+/* ── Step 1: 약속 이름 + 시간 고르는 방식 ──────────────────── */
 function Step1({ form, set }) {
   return (
     <>
       <div style={{ marginBottom: 28 }}>
-        <p style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.3 }}>약속 정보를<br />입력해주세요</p>
-        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>기본 정보를 설정해요</p>
+        <p style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.3 }}>약속의 기본 방향을<br />정해볼까요?</p>
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>이름과 시간 입력 방식을 먼저 설정해요</p>
       </div>
 
+      {/* 약속 이름 */}
       <div className="form-group">
         <label className="form-label">약속 이름</label>
-        <input className="form-input" placeholder="예) 친구들과 저녁 식사"
-          value={form.name} onChange={e => set('name', e.target.value)} maxLength={40} />
+        <input
+          className="form-input"
+          placeholder="예) 친구들과 저녁 식사"
+          value={form.name}
+          onChange={e => set('name', e.target.value)}
+          maxLength={40}
+        />
       </div>
 
-      <div className="form-group">
-        <label className="form-label">설명 <span>(선택)</span></label>
-        <textarea className="form-textarea" placeholder="약속에 대한 간단한 설명을 입력해주세요." rows={3}
-          value={form.description} onChange={e => set('description', e.target.value)} maxLength={80} />
-        <div className="char-count">{form.description.length}/80</div>
-      </div>
-
-      <div className="form-group">
-        <label className="form-label">가능 날짜 범위</label>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input type="date" className="form-input" value={form.dateStart} min={todayStr}
-            onChange={e => set('dateStart', e.target.value)} />
-          <span style={{ color: 'var(--text-muted)', fontSize: 14, flexShrink: 0 }}>~</span>
-          <input type="date" className="form-input" value={form.dateEnd} min={form.dateStart}
-            onChange={e => set('dateEnd', e.target.value)} />
+      {/* 시간 고르는 방식 */}
+      <div className="section">
+        <div className="section-title" style={{ marginBottom: 4 }}>시간 고르는 방식</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+          친구들이 시간을 어떻게 고르게 할까요?
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {[
+            {
+              val:  'exact',
+              title: '정확한 시간으로 잡기',
+              desc:  '시작·끝 시간이 중요한 약속',
+              sub:   '예: 회의, 예약, 영화, 스터디',
+            },
+            {
+              val:  'flexible',
+              title: '여유 시간대로 잡기',
+              desc:  '오전·오후·저녁처럼 넓게 맞추는 약속',
+              sub:   '예: 밥, 카페, 주말 약속',
+            },
+          ].map(o => (
+            <button
+              key={o.val}
+              className={`radio-card${form.scheduleMode === o.val ? ' selected' : ''}`}
+              onClick={() => set('scheduleMode', o.val)}
+            >
+              <div className="radio-dot" />
+              <div className="radio-card-text">
+                <strong>{o.title}</strong>
+                <span>{o.desc}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3, display: 'block' }}>{o.sub}</span>
+              </div>
+            </button>
+          ))}
         </div>
-      </div>
-
-      <div className="form-group">
-        <label className="form-label">참여자 제한 <span>(선택)</span></label>
-        <input type="number" className="form-input" placeholder="제한 없음"
-          value={form.maxParticipants} min={2} max={50}
-          onChange={e => set('maxParticipants', e.target.value)} />
       </div>
     </>
   )
 }
 
-/* ── Step 2: type / duration / mode ─────────────────────── */
+/* ── Step 2: 약속 유형 + 예상 소요 시간 + 만날 장소 ──────────── */
 function Step2({ form, set, setType }) {
   return (
     <>
       <div style={{ marginBottom: 28 }}>
         <p style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.3 }}>약속 유형을<br />선택해주세요</p>
-        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>약속 유형에 맞게 자동으로 추천해드려요</p>
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>유형에 맞게 소요 시간을 자동 추천해드려요</p>
       </div>
 
+      {/* 약속 유형 */}
       <div className="section">
         <div className="section-title">약속 유형</div>
         <div className="chip-grid">
           {TYPES.map(({ key, icon: Icon }) => (
-            <button key={key} className={`chip${form.type === key ? ' selected' : ''}`}
-              onClick={() => setType(key)}>
+            <button
+              key={key}
+              className={`chip${form.type === key ? ' selected' : ''}`}
+              onClick={() => setType(key)}
+            >
               <span style={{ color: form.type === key ? 'var(--primary)' : 'var(--text-muted)' }}>
                 <Icon />
               </span>
@@ -164,48 +189,44 @@ function Step2({ form, set, setType }) {
         </div>
       </div>
 
+      {/* 예상 소요 시간 */}
       <div className="section">
         <div className="section-title" style={{ marginBottom: 4 }}>예상 소요 시간</div>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>결과 추천에 사용할 약속 길이예요.</p>
         <div className="chip-row">
           {DURATIONS.map(d => (
-            <button key={d} className={`chip-pill${form.duration === d ? ' selected' : ''}`}
-              onClick={() => set('duration', d)}>
+            <button
+              key={d}
+              className={`chip-pill${form.duration === d ? ' selected' : ''}`}
+              onClick={() => set('duration', d)}
+            >
               {d}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="section">
-        <div className="section-title" style={{ marginBottom: 4 }}>시간 고르는 방식</div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>참여자가 시간을 얼마나 자세히 고를지 정해요.</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {[
-            { val: 'exact',    title: '정확한 시간으로 잡기', desc: '시작 시간과 끝 시간이 중요한 약속' },
-            { val: 'flexible', title: '여유 시간대로 잡기',   desc: '오전, 오후, 저녁처럼 넓게 맞추는 약속' },
-          ].map(o => (
-            <button key={o.val} className={`radio-card${form.scheduleMode === o.val ? ' selected' : ''}`}
-              onClick={() => set('scheduleMode', o.val)}>
-              <div className="radio-dot" />
-              <div className="radio-card-text">
-                <strong>{o.title}</strong>
-                <span>{o.desc}</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
+      {/* 만날 장소 */}
       <div className="section">
         <div className="section-title">만날 장소</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
-            { val: 'later',  title: '나중에 정하기',       desc: '시간만 먼저 잡고, 장소는 나중에 정해요.' },
-            { val: 'middle', title: '중간 장소 추천 받기', desc: '참여자 출발 지점을 입력하면 중간 지점을 추천해드려요.' },
+            {
+              val:   'later',
+              title: '나중에 정하기',
+              desc:  '시간만 먼저 고르고, 장소는 나중에 정해요.',
+            },
+            {
+              val:   'middle',
+              title: '중간 장소 추천 받기',
+              desc:  '참여자 출발 장소를 바탕으로 만나기 쉬운 후보를 추천해요.',
+            },
           ].map(o => (
-            <button key={o.val} className={`radio-card${form.placeMode === o.val ? ' selected' : ''}`}
-              onClick={() => set('placeMode', o.val)}>
+            <button
+              key={o.val}
+              className={`radio-card${form.placeMode === o.val ? ' selected' : ''}`}
+              onClick={() => set('placeMode', o.val)}
+            >
               <div className="radio-dot" />
               <div className="radio-card-text">
                 <strong>{o.title}</strong>
@@ -219,31 +240,74 @@ function Step2({ form, set, setType }) {
   )
 }
 
-/* ── Step 3: review ──────────────────────────────────────── */
-function Step3({ form }) {
-  const rows = [
-    ['약속 이름', form.name],
-    ['약속 유형', form.type],
-    ['예상 소요 시간', form.duration],
-    ['시간 고르는 방식', form.scheduleMode === 'exact' ? '정확한 시간으로 잡기' : '여유 시간대로 잡기'],
-    ['가능 날짜 범위', `${form.dateStart} ~ ${form.dateEnd}`],
-    ['장소 결정 방식', form.placeMode === 'later' ? '나중에 정하기' : '중간 장소 추천 받기'],
-    ...(form.description ? [['설명', form.description]] : []),
-    ...(form.maxParticipants ? [['참여자 제한', `${form.maxParticipants}명`]] : []),
-  ]
+/* ── Step 3: 추가 설정 + 확인 ────────────────────────────── */
+function Step3({ form, set }) {
+  const modeLabel = form.scheduleMode === 'exact' ? '정확한 시간으로 잡기' : '여유 시간대로 잡기'
+  const placeLabel = form.placeMode === 'later' ? '나중에 정하기' : '중간 장소 추천 받기'
+
   return (
     <>
       <div style={{ marginBottom: 28 }}>
-        <p style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.3 }}>약속 정보를<br />확인해주세요</p>
-        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>입력한 내용을 확인하세요.</p>
+        <p style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.3 }}>마지막으로<br />날짜를 설정해요</p>
+        <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 6 }}>언제 가능한지 범위를 알려주세요</p>
       </div>
-      <div className="card">
-        {rows.map(([label, val]) => (
-          <div className="info-row" key={label}>
-            <span className="info-row-label">{label}</span>
-            <span className="info-row-value">{val}</span>
+
+      {/* 지금까지 설정 미리보기 */}
+      <div style={{
+        background: 'var(--bg-muted)', border: '1px solid var(--border)',
+        borderRadius: 10, padding: '12px 14px', marginBottom: 24,
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8, letterSpacing: '.3px' }}>
+          지금까지 설정한 내용
+        </div>
+        {[
+          [form.name,  '약속 이름'],
+          [modeLabel,  '시간 방식'],
+          [form.type,  '약속 유형'],
+          [form.duration, '소요 시간'],
+          [placeLabel, '장소'],
+        ].map(([val, label]) => (
+          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+            <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{val}</span>
           </div>
         ))}
+      </div>
+
+      {/* 가능 날짜 범위 */}
+      <div className="form-group">
+        <label className="form-label">가능 날짜 범위</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="date" className="form-input" value={form.dateStart} min={todayStr}
+            onChange={e => set('dateStart', e.target.value)}
+          />
+          <span style={{ color: 'var(--text-muted)', fontSize: 14, flexShrink: 0 }}>~</span>
+          <input
+            type="date" className="form-input" value={form.dateEnd} min={form.dateStart}
+            onChange={e => set('dateEnd', e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* 설명 (선택) */}
+      <div className="form-group">
+        <label className="form-label">설명 <span>(선택)</span></label>
+        <textarea
+          className="form-textarea" placeholder="약속에 대한 간단한 설명을 입력해주세요." rows={3}
+          value={form.description} onChange={e => set('description', e.target.value)} maxLength={80}
+        />
+        <div className="char-count">{form.description.length}/80</div>
+      </div>
+
+      {/* 참여자 제한 (선택) */}
+      <div className="form-group">
+        <label className="form-label">참여자 제한 <span>(선택)</span></label>
+        <input
+          type="number" className="form-input" placeholder="제한 없음"
+          value={form.maxParticipants} min={2} max={50}
+          onChange={e => set('maxParticipants', e.target.value)}
+        />
       </div>
     </>
   )

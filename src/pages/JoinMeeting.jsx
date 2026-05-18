@@ -7,9 +7,9 @@ import Calendar from '../components/Calendar'
 import Layout from '../components/Layout'
 
 /* ── Constants ───────────────────────────────────────────── */
-const HUBS_POPULAR = ['강남/역삼', '홍대/신촌', '종로/을지로', '성수/건대', '잠실', '여의도/영등포', '서울역/용산', '사당/교대']
-const HUBS_MORE    = ['왕십리', '혜화', '수원', '동탄', '분당/판교', '인천/부평']
-const HUB_CUSTOM   = '직접 입력'
+// Region-hint chips help narrow down where the participant is starting from.
+// These are broad area hints (not meeting hotspots).
+const REGION_HINTS = ['서울', '경기 남부', '경기 북부', '인천', '기타']
 
 const FLEX_BLOCKS = [
   { key: 'morning',   label: '오전' },
@@ -59,61 +59,43 @@ function XIcon() {
   )
 }
 
-/* ── Hub section (only when placeMode === 'middle') ──────── */
-function HubSection({ startingHub, startingDetail, showMore, onSelectHub, onToggleMore, onChangeDetail }) {
-  const displayed = showMore
-    ? [...HUBS_POPULAR, ...HUBS_MORE, HUB_CUSTOM]
-    : [...HUBS_POPULAR, HUB_CUSTOM]
-
+/* ── Starting place section (only when placeMode === 'middle') */
+function StartingPlaceSection({ placeText, regionHint, onChangeText, onSelectRegion }) {
   return (
     <div className="form-group" style={{ marginBottom: 24 }}>
-      <label className="form-label">출발 거점 <span>(선택)</span></label>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
-        중간 장소 추천을 원하면 출발 거점을 알려주세요.
-      </p>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+      <label className="form-label">출발 장소 <span>(선택)</span></label>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.7 }}>
+        중간 장소 추천을 원하면 출발 기준지를 알려주세요.<br />
+        정확한 주소는 필요 없어요. 가까운 역이나 동네면 충분해요.<br />
         건너뛰어도 참여할 수 있어요.
       </p>
 
-      <div className="chip-row" style={{ marginBottom: 8 }}>
-        {displayed.map(hub => (
+      {/* Broad region hint chips */}
+      <div className="chip-row" style={{ marginBottom: 10 }}>
+        {REGION_HINTS.map(hint => (
           <button
-            key={hub}
-            className={`chip-pill${startingHub === hub ? ' selected' : ''}`}
-            onClick={() => onSelectHub(hub)}
+            key={hint}
+            className={`chip-pill${regionHint === hint ? ' selected' : ''}`}
+            onClick={() => onSelectRegion(regionHint === hint ? '' : hint)}
           >
-            {hub}
+            {hint}
           </button>
         ))}
       </div>
 
-      {!showMore && (
-        <button
-          style={{
-            fontSize: 12, color: 'var(--text-secondary)', background: 'none', border: 'none',
-            cursor: 'pointer', padding: '4px 0', fontFamily: 'var(--font)', textDecoration: 'underline',
-          }}
-          onClick={onToggleMore}
-        >
-          더 보기
-        </button>
-      )}
-
-      {startingHub === HUB_CUSTOM && (
-        <input
-          className="form-input"
-          style={{ marginTop: 8 }}
-          placeholder="출발 지역을 직접 입력해주세요."
-          value={startingDetail}
-          onChange={e => onChangeDetail(e.target.value)}
-          maxLength={40}
-        />
-      )}
+      {/* Free-text input: nearest station or neighborhood */}
+      <input
+        className="form-input"
+        placeholder="예: 망포역, 산본, 마곡나루, 광교중앙역, 부천시청"
+        value={placeText}
+        onChange={e => onChangeText(e.target.value)}
+        maxLength={40}
+      />
     </div>
   )
 }
 
-/* ── Exact mode: per-date time pickers ───────────────────── */
+/* ── Exact mode: per-date start/end time pickers ─────────── */
 function ExactDateCard({ d, s, onSetMode, onChangeStart, onChangeEnd }) {
   return (
     <div className="card">
@@ -178,8 +160,8 @@ function ExactDateCard({ d, s, onSetMode, onChangeStart, onChangeEnd }) {
 
 /* ── Flexible mode: broad blocks + optional time ─────────── */
 function FlexDateCard({ d, s, onToggleBlock, onChangeStart, onChangeEnd }) {
-  const blocks   = s.blocks || []
-  const isAllday = blocks.includes('allday')
+  const blocks    = s.blocks || []
+  const isAllday  = blocks.includes('allday')
   const hasBlocks = blocks.length > 0
 
   return (
@@ -198,7 +180,7 @@ function FlexDateCard({ d, s, onToggleBlock, onChangeStart, onChangeEnd }) {
         ))}
       </div>
 
-      {/* Optional detailed time — shown only if non-allday blocks selected */}
+      {/* Optional detailed time — only when non-allday blocks selected */}
       {hasBlocks && !isAllday && (
         <div style={{ background: 'var(--bg-muted)', borderRadius: 9, padding: '12px 14px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, fontWeight: 500 }}>
@@ -249,13 +231,12 @@ export default function JoinMeeting() {
 
   const meeting = getMeeting(id)
 
-  const [name,           setName]           = useState('')
-  const [startingHub,    setStartingHub]    = useState('')
-  const [startingDetail, setStartingDetail] = useState('')
-  const [showMoreHubs,   setShowMoreHubs]   = useState(false)
-  const [selectedDates,  setDates]          = useState([])
-  const [dateSettings,   setSettings]       = useState({})
-  const [submitted,      setSubmitted]      = useState(false)
+  const [name,              setName]             = useState('')
+  const [startingPlaceText, setStartingPlaceText] = useState('')
+  const [startingRegionHint,setStartingRegionHint]= useState('')
+  const [selectedDates,     setDates]             = useState([])
+  const [dateSettings,      setSettings]          = useState({})
+  const [submitted,         setSubmitted]         = useState(false)
 
   if (!meeting) {
     return (
@@ -289,7 +270,7 @@ export default function JoinMeeting() {
     setSettings(s => { const n = { ...s }; delete n[dateStr]; return n })
   }
 
-  /* ── Exact mode: toggle anytime vs timed ────────────────── */
+  /* ── Exact mode: anytime vs timed ───────────────────────── */
   function setExactMode(date, mode) {
     setSettings(s => ({
       ...s,
@@ -324,30 +305,21 @@ export default function JoinMeeting() {
     setSettings(s => ({ ...s, [date]: { ...s[date], timeEnd: val } }))
   }
 
-  /* ── Hub selection ───────────────────────────────────────── */
-  function handleHubSelect(hub) {
-    setStartingHub(prev => prev === hub ? '' : hub)
-    if (hub !== HUB_CUSTOM) setStartingDetail('')
-  }
-
   /* ── Submit ──────────────────────────────────────────────── */
   function handleSubmit() {
     if (!name.trim())               { show('이름을 입력해주세요');         return }
     if (selectedDates.length === 0) { show('가능한 날짜를 선택해주세요'); return }
 
-    const areaDisplay = startingHub === HUB_CUSTOM
-      ? startingDetail.trim()
-      : startingHub || ''
-
     const responseId = isHost ? `host_${id}` : generateId()
 
     saveResponse(id, {
-      id: responseId,
-      name: name.trim(),
-      isHost: isHost || undefined,
-      startingHub: startingHub || null,
-      startingAreaDetail: startingHub === HUB_CUSTOM ? startingDetail.trim() || null : null,
-      area: areaDisplay,
+      id:                 responseId,
+      name:               name.trim(),
+      isHost:             isHost || undefined,
+      startingPlaceText:  startingPlaceText.trim() || null,
+      startingRegionHint: startingRegionHint || null,
+      // legacy compat field
+      area: startingPlaceText.trim() || startingRegionHint || '',
       dates: selectedDates.map(d => {
         const s = dateSettings[d] || emptyDateSetting(scheduleMode)
         return {
@@ -415,15 +387,13 @@ export default function JoinMeeting() {
             value={name} onChange={e => setName(e.target.value)} maxLength={20} />
         </div>
 
-        {/* ── Starting hub (only for middle place mode) ─────── */}
+        {/* ── Starting place (only when host selected 중간 장소 추천 받기) */}
         {showArea && (
-          <HubSection
-            startingHub={startingHub}
-            startingDetail={startingDetail}
-            showMore={showMoreHubs}
-            onSelectHub={handleHubSelect}
-            onToggleMore={() => setShowMoreHubs(true)}
-            onChangeDetail={v => setStartingDetail(v)}
+          <StartingPlaceSection
+            placeText={startingPlaceText}
+            regionHint={startingRegionHint}
+            onChangeText={v => setStartingPlaceText(v)}
+            onSelectRegion={v => setStartingRegionHint(v)}
           />
         )}
 
