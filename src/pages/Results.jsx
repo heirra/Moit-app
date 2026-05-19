@@ -17,50 +17,178 @@ const BLOCK_LABELS = { morning: '오전', afternoon: '오후', evening: '저녁'
 const DOW_KR = ['일', '월', '화', '수', '목', '금', '토']
 
 /* ── Meeting-place rule engine ───────────────────────────── */
-const PLACE_RULES = [
+const ORIGIN_CLUSTERS = [
   {
-    keywords: ['경기 남부', '수원', '동탄', '분당', '판교', '화성', '안양', '안산', '평택', '오산', '용인', '군포', '의왕', '망포', '광교'],
-    suggestions: ['사당', '양재', '강남'],
+    id: 'seoul_north',
+    label: '서울 북부',
+    keywords: ['노원', '도봉', '강북', '창동', '쌍문', '중계', '하계', '공릉', '월계', '수락산', '당고개', '방학', '쌍문'],
+    candidates: ['왕십리', '청량리', '종로3가'],
   },
   {
-    keywords: ['경기 북부', '노원', '의정부', '구리', '도봉', '은평', '창동', '별내', '남양주', '포천', '양주'],
-    suggestions: ['왕십리', '종로', '을지로'],
+    id: 'seoul_east',
+    label: '서울 동부',
+    keywords: ['잠실', '강동', '송파', '성수', '건대', '광진', '뚝섬', '천호', '길동', '명일', '마천', '하남'],
+    candidates: ['왕십리', '건대입구', '성수'],
   },
   {
-    keywords: ['인천', '부천', '김포', '경기 서부', '검단', '계양', '청라'],
-    suggestions: ['신도림', '영등포', '홍대'],
+    id: 'seoul_west',
+    label: '서울 서부/마포',
+    keywords: ['마포', '홍대', '합정', '상암', '망원', '연남', '신촌', '아현', '서대문'],
+    candidates: ['홍대입구', '합정', '서울역'],
   },
   {
-    keywords: ['마포', '홍대', '신촌', '상암', '합정', '서울 서부', '은평'],
-    suggestions: ['종로', '을지로', '서울역'],
+    id: 'seoul_gangnam',
+    label: '서울 강남',
+    keywords: ['강남', '역삼', '선릉', '서초', '양재', '신사', '논현', '삼성', '대치', '개포', '방배'],
+    candidates: ['강남', '사당', '양재'],
   },
   {
-    keywords: ['잠실', '강동', '성수', '건대', '광진', '송파', '서울 동부', '하남'],
-    suggestions: ['성수', '건대', '왕십리'],
+    id: 'seoul_center',
+    label: '서울 중부/용산',
+    keywords: ['종로', '을지로', '중구', '서울역', '용산', '이태원', '한남', '명동', '시청', '광화문', '충무로'],
+    candidates: ['서울역', '홍대입구', '왕십리'],
+  },
+  {
+    id: 'seoul_gangseo',
+    label: '서울 강서/영등포',
+    keywords: ['강서', '마곡', '화곡', '목동', '영등포', '신도림', '여의도', '당산', '양천', '가양'],
+    candidates: ['신도림', '홍대입구', '영등포'],
+  },
+  {
+    id: 'seoul_eunpyeong',
+    label: '서울 은평/서북',
+    keywords: ['은평', '연신내', '불광', '구파발', '수색', '증산', '북가좌', '갈현', '응암'],
+    candidates: ['홍대입구', '합정', '서울역'],
+  },
+  {
+    id: 'gyeonggi_northeast',
+    label: '경기 북동부',
+    keywords: ['의정부', '별내', '다산', '구리', '남양주', '도농', '마석', '양주', '포천', '동두천', '덕소', '호평', '진접'],
+    candidates: ['왕십리', '청량리', '건대입구'],
+  },
+  {
+    id: 'gyeonggi_northwest',
+    label: '경기 북서부',
+    keywords: ['일산', '화정', '능곡', '행신', '파주', '운정', '삼송', '원흥', '지축', '고양'],
+    candidates: ['홍대입구', '합정', '서울역'],
+  },
+  {
+    id: 'gyeonggi_southeast',
+    label: '경기 동남부',
+    keywords: ['성남', '분당', '판교', '이매', '서현', '정자', '야탑', '모란', '수정', '광주'],
+    candidates: ['강남', '양재', '사당'],
+  },
+  {
+    id: 'gyeonggi_south',
+    label: '경기 남부',
+    keywords: ['수원', '망포', '광교', '용인', '수지', '기흥', '동탄', '화성', '오산', '평택', '안양', '산본', '군포', '의왕', '안산', '시흥', '광명', '병점'],
+    candidates: ['사당', '강남', '신도림'],
+  },
+  {
+    id: 'gyeonggi_southwest',
+    label: '경기 서남부/부천',
+    keywords: ['부천', '소사', '역곡', '중동', '상동', '계양', '김포', '검단'],
+    candidates: ['신도림', '홍대입구', '영등포'],
+  },
+  {
+    id: 'incheon',
+    label: '인천',
+    keywords: ['인천', '청라', '연수', '송도', '부평', '주안', '간석', '작전', '십정', '석남'],
+    candidates: ['신도림', '홍대입구', '영등포'],
   },
 ]
 
+const CENTRAL_HUBS = new Set(['서울역', '왕십리', '사당', '신도림', '강남'])
+
+const HUB_PRIORITY = ['사당', '강남', '서울역', '왕십리', '신도림', '홍대입구', '합정']
+
+const CANDIDATE_DESCRIPTIONS = {
+  '강남':    '강남역 · 2·신분당선 · 경기 남부·분당·판교에서 접근 편리',
+  '사당':    '사당역 · 2·4호선 환승 · 경기 남부에서 서울 진입 1번지',
+  '양재':    '양재역 · 3·신분당선 · 분당·용인·판교와 강남 사이 중간지',
+  '신도림':  '신도림역 · 1·2호선 환승 · 인천·부천·강서·강남 교차점',
+  '왕십리':  '왕십리역 · 2·5·경의중앙·수인분당선 · 동북부·동부 교차점',
+  '홍대입구':'홍대입구역 · 2·경의중앙·공항철도 · 인천·경기 북서부·마포 접점',
+  '합정':    '합정역 · 2·6호선 · 마포·경기 북서부 참여자 모이기 좋은 중간지',
+  '서울역':  '서울역 · 1·4호선·KTX · 경기 전역에서 접근 가능한 최대 허브',
+  '건대입구':'건대입구역 · 2·7호선 · 서울 동부·경기 북동부 중간 거점',
+  '성수':    '성수역 · 2호선 · 강동·잠실·왕십리 사이 활기찬 상권',
+  '종로3가': '종로3가역 · 1·3·5호선 트리플 환승 · 도심 접근성 최상',
+  '을지로3가':'을지로3가역 · 2·3호선 · 도심, 종로·명동과 도보권',
+  '영등포':  '영등포역 · 1호선·경인선 · 인천·부천·강서에서 가장 가까운 서울',
+  '이태원':  '이태원역 · 6호선 · 도심과 강남 중간, 다양한 음식·분위기',
+  '여의도':  '여의도역 · 5·9호선 · 강서·영등포·마포 삼각지대 중심',
+  '잠실':    '잠실역 · 2·8호선 · 강동·송파 거점, 경기 동남부 접근 가능',
+  '혜화':    '혜화역 · 4호선 · 대학로 분위기, 강북·도심 중간',
+  '신촌':    '신촌역 · 2호선 · 마포·서대문 인근, 홍대보다 한산',
+  '시청':    '시청역 · 1·2호선 · 도심 정중앙, 어디서든 접근 가능',
+  '광화문':  '광화문역 · 5호선 · 도심 중심, 종로 인접',
+  '노원':    '노원역 · 4·7호선 · 서울 북부 거점, 의정부와 서울 중간',
+  '석계':    '석계역 · 1·6호선 · 성북·중랑 교차, 북부 접근 편리',
+  '상봉':    '상봉역 · 7호선·경의중앙 · 구리·남양주 서울 진입 초입',
+  '청량리':  '청량리역 · 1·경춘·경의중앙 · 경기 북동부 최대 환승 거점',
+  '수원':    '수원역 · 1호선 · 경기 남부 외곽 참여자 비중 높을 때 거점',
+}
+
 function getMeetingPlaceSuggestions(responses) {
-  const allText = responses
-    .flatMap(r => [
-      r.startingPlaceText || '',
-      r.startingRegionHint || '',
-      // legacy fields
-      r.startingHub || '',
-      r.area || '',
-    ])
-    .join(' ')
-    .toLowerCase()
+  // Only participants who entered any starting place info
+  const withPlace = responses.filter(r =>
+    r.startingPlaceText?.trim() ||
+    r.startingRegionHint ||
+    r.startingHub ||
+    r.area?.trim()
+  )
 
-  if (!allText.trim()) return []
+  if (withPlace.length === 0) return { status: 'no_data', candidates: [], hasSpecific: false }
 
-  const found = new Set()
-  for (const rule of PLACE_RULES) {
-    if (rule.keywords.some(kw => allText.includes(kw.toLowerCase()))) {
-      rule.suggestions.forEach(s => found.add(s))
+  const hasSpecific = withPlace.some(r => Boolean(r.startingPlaceText?.trim()))
+
+  if (withPlace.length === 1) return { status: 'single', candidates: [], hasSpecific }
+
+  // Build per-participant text
+  const participantTexts = withPlace.map(r =>
+    [r.startingPlaceText || '', r.startingRegionHint || '', r.startingHub || '', r.area || '']
+      .join(' ').toLowerCase()
+  )
+
+  // Score candidates and track matched clusters
+  const scores = {}
+  const matchedClusterIds = new Set()
+
+  for (const text of participantTexts) {
+    for (const cluster of ORIGIN_CLUSTERS) {
+      if (cluster.keywords.some(kw => text.includes(kw.toLowerCase()))) {
+        matchedClusterIds.add(cluster.id)
+        for (const cand of cluster.candidates) {
+          scores[cand] = (scores[cand] || 0) + 2
+        }
+      }
     }
   }
-  return [...found].slice(0, 5)
+
+  if (Object.keys(scores).length === 0) {
+    return { status: 'vague', candidates: [], hasSpecific }
+  }
+
+  // Central hub bonus: +1 when ≥2 distinct clusters matched
+  if (matchedClusterIds.size >= 2) {
+    for (const hub of CENTRAL_HUBS) {
+      if (scores[hub] !== undefined) scores[hub] += 1
+    }
+  }
+
+  // Sort by score desc, then by HUB_PRIORITY for ties
+  const sorted = Object.entries(scores)
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1]
+      const ai = HUB_PRIORITY.indexOf(a[0])
+      const bi = HUB_PRIORITY.indexOf(b[0])
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+    })
+    .slice(0, 5)
+    .map(([name, score]) => ({ name, score, desc: CANDIDATE_DESCRIPTIONS[name] || name }))
+
+  return { status: 'ok', candidates: sorted, hasSpecific }
 }
 
 /* ── Starting-place display helper (handles all legacy formats) */
@@ -330,33 +458,74 @@ function ResultCalendar({ meeting, dateCounts, total }) {
 
 /* ── Meeting place suggestion section ────────────────────── */
 function MeetingPlaceSection({ responses }) {
-  const suggestions = getMeetingPlaceSuggestions(responses)
+  const { status, candidates, hasSpecific } = getMeetingPlaceSuggestions(responses)
 
   return (
     <div className="section">
       <div className="section-title">만날 장소 후보</div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
-        출발지를 기준으로 만나기 쉬운 생활권 후보예요.
+        참여자 출발지를 기준으로 만나기 편한 지역을 추천해요.
       </p>
-      {suggestions.length > 0 ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {suggestions.map(s => (
-            <span key={s} style={{
-              padding: '6px 16px',
-              background: 'var(--bg-muted)',
-              border: '1px solid var(--border)',
-              borderRadius: 20,
-              fontSize: 14, fontWeight: 600,
-              color: 'var(--text-primary)',
-            }}>
-              {s}
-            </span>
-          ))}
-        </div>
-      ) : (
+
+      {status === 'no_data' && (
         <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          출발 장소가 더 모이면 장소 후보를 추천할 수 있어요.
+          출발 장소를 입력한 참여자가 없어요.<br />
+          참여자들이 출발지를 입력하면 여기서 후보를 확인할 수 있어요.
         </p>
+      )}
+
+      {status === 'single' && (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          출발 장소를 입력한 참여자가 1명이에요.<br />
+          2명 이상 입력되면 중간 장소를 추천할 수 있어요.
+        </p>
+      )}
+
+      {status === 'vague' && (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          입력된 출발지가 너무 광범위해요.<br />
+          가까운 역이나 동네명을 입력하면 더 정확한 추천이 가능해요.
+        </p>
+      )}
+
+      {status === 'ok' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {candidates.map((c, i) => (
+            <div key={c.name} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 12,
+              padding: '12px 14px',
+              background: i === 0 ? 'var(--primary-bg)' : 'var(--bg-muted)',
+              border: `1px solid ${i === 0 ? 'var(--primary)' : 'var(--border)'}`,
+              borderRadius: 10,
+            }}>
+              <span style={{
+                minWidth: 24, height: 24,
+                borderRadius: '50%',
+                background: i === 0 ? 'var(--primary)' : 'var(--secondary-bg)',
+                border: i === 0 ? 'none' : '1px solid var(--border)',
+                color: i === 0 ? '#fff' : 'var(--text-secondary)',
+                fontSize: 12, fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                {i + 1}
+              </span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>
+                  {c.name}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  {c.desc}
+                </div>
+              </div>
+            </div>
+          ))}
+          {!hasSpecific && (
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+              * 구체적인 역·동네를 입력할수록 추천 정확도가 높아져요.
+            </p>
+          )}
+        </div>
       )}
     </div>
   )

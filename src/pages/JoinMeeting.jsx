@@ -9,7 +9,7 @@ import Layout from '../components/Layout'
 /* ── Constants ───────────────────────────────────────────── */
 // Region-hint chips help narrow down where the participant is starting from.
 // These are broad area hints (not meeting hotspots).
-const REGION_HINTS = ['서울', '경기 남부', '경기 북부', '인천', '기타']
+const REGION_HINTS = ['서울', '경기 북동부', '경기 북서부', '경기 남부', '경기 동남부', '경기 서남부', '인천', '기타']
 
 const FLEX_BLOCKS = [
   { key: 'morning',   label: '오전' },
@@ -86,7 +86,7 @@ function StartingPlaceSection({ placeText, regionHint, onChangeText, onSelectReg
       {/* Free-text input: nearest station or neighborhood */}
       <input
         className="form-input"
-        placeholder="예: 망포역, 산본, 마곡나루, 광교중앙역, 부천시청"
+        placeholder="예: 의정부역, 별내, 다산, 일산, 화정역, 파주, 구리역, 망포역, 산본, 마곡나루"
         value={placeText}
         onChange={e => onChangeText(e.target.value)}
         maxLength={40}
